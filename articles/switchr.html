@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Inside Switchr — technologies and approaches | Tomáš Trachta</title>
+	<meta name="description" content="A technical walkthrough of Switchr, a Direct2D/DirectComposition window switcher for Windows: GPU-composited overlay rendering, DWM live thumbnails, MRU tracking via WinEvent hooks, fuzzy search ranking, and jank-free namespace switching.">
+	<link rel="stylesheet" href="../assets/css/style.css">
+	<link rel="stylesheet" href="../assets/css/article.css">
+</head>
+<body>
+	<header class="nav">
+		<div class="nav-inner">
+			<a class="brand" href="../index.html#top">Tomáš Trachta</a>
+			<nav class="nav-links">
+				<a href="../index.html#projects">Projects</a>
+				<a href="../index.html#about">About</a>
+				<a href="../index.html#cv">CV</a>
+				<a href="../index.html#contact">Contact</a>
+			</nav>
+		</div>
+	</header>
+
+	<main>
+		<article class="article">
+			<div class="article-inner">
+				<p class="article-back"><a href="../index.html#projects">← Back to projects</a></p>
+				<p class="eyebrow">Switchr</p>
+				<h1>Technologies and approaches behind Switchr</h1>
+				<p class="article-lede">
+					Switchr is a keyboard-driven window switcher for Windows: a tray app that renders a
+					GPU-composited overlay with live thumbnails on a hotkey. It's built in C++17 directly on
+					Direct3D 11, DirectComposition, and Direct2D — no game engine, no UI toolkit — plus a set
+					of Win32/DWM mechanisms (WinEvent hooks, live thumbnails, cloak checks) that most Alt-Tab
+					clones skip. Here's how the pieces fit together, with links straight to the source.
+				</p>
+
+				<h2>The rendering stack: D3D11 device behind a composition swap chain</h2>
+				<p>
+					The overlay window doesn't own a normal HWND-backed swap chain — it's composited.
+					<code>Renderer</code> creates a D3D11 device with <code>BGRA_SUPPORT</code>, wraps it in a
+					<code>DCompositionDevice</code>, and creates a swap chain
+					<em>for composition</em> rather than for the window directly, attaching it to a
+					<code>DCompositionVisual</code> that's the actual thing DWM composites to screen:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp#L29-L34" target="_blank" rel="noopener">Switchr/src/Renderer.cpp#L29-L34</a>
+					and
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp#L68-L81" target="_blank" rel="noopener">L68-L81</a>.
+					Direct2D then gets a device context created directly on top of the same DXGI device, so
+					D2D draws land straight into the swap chain's back buffer with no extra copy
+					(<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp#L83-L90" target="_blank" rel="noopener">L83-L90</a>).
+				</p>
+				<p>
+					Fade in/out isn't driven by a UI-thread timer. <code>IDCompositionVisual</code> has no
+					opacity property of its own, so an effect group is attached to carry it, and
+					<code>AnimateOpacity()</code> hands DComp a linear ramp via
+					<code>IDCompositionAnimation::AddCubic</code> — once committed, the compositor advances
+					the fade on its own thread, independent of whatever the app thread is doing:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp#L188-L205" target="_blank" rel="noopener">Switchr/src/Renderer.cpp#L188-L205</a>.
+					That's what keeps the overlay's fade smooth even if the app thread is momentarily busy
+					laying out tiles or rescoring a search.
+				</p>
+
+				<h2>Live thumbnails via DWM, not screenshots</h2>
+				<p>
+					The tile grid doesn't grab bitmaps of other windows — it registers each visible window as
+					a DWM thumbnail source with <code>DwmRegisterThumbnail</code> and lets the compositor
+					stream the live content directly into a destination rectangle on the overlay:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp#L852-L866" target="_blank" rel="noopener">Switchr/src/Overlay.cpp#L852-L866</a>.
+					Because DWM doesn't clip a thumbnail to the destination window's bounds, a tile that's
+					only half-scrolled into view would otherwise bleed over the search box — so before every
+					layout pass Switchr explicitly hides any thumbnail whose tile isn't fully inside the
+					visible viewport, rather than relying on clipping that doesn't exist:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp#L868-L894" target="_blank" rel="noopener">L868-L894</a>.
+				</p>
+
+				<h2>MRU ordering from one event hook, not polling</h2>
+				<p>
+					Most-recently-used ordering comes from a single <code>SetWinEventHook</code> on
+					<code>EVENT_SYSTEM_FOREGROUND</code> — every time a top-level window becomes the
+					foreground window, it gets stamped with the next value of a monotonically increasing
+					counter, and the tile grid just sorts by that stamp:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/MruTracker.cpp#L8-L19" target="_blank" rel="noopener">Switchr/src/MruTracker.cpp#L8-L19</a>.
+					On startup there's no history yet, so ranks are seeded once from the current z-order —
+					<code>EnumWindows</code> already yields windows topmost-first, so the front-most window
+					just gets the highest initial rank:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/MruTracker.cpp#L26-L36" target="_blank" rel="noopener">L26-L36</a>.
+					No polling, no periodic rescan — the whole tracker is an event callback and a hash map.
+				</p>
+
+				<h2>Which windows even count as "Alt-Tab windows"</h2>
+				<p>
+					Deciding what belongs in the switcher at all turns out to be its own small algorithm.
+					Switchr reimplements the classic rule Windows itself uses for Alt-Tab: a window only
+					qualifies if it's the last active visible popup of its own owner chain, walked via
+					<code>GetAncestor(GA_ROOTOWNER)</code> and <code>GetLastActivePopup</code> — which is what
+					correctly excludes owned dialogs and tool palettes while still surfacing the right window
+					for apps that keep a hidden main frame behind a visible child:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/WindowList.cpp#L25-L51" target="_blank" rel="noopener">Switchr/src/WindowList.cpp#L25-L51</a>.
+					On top of that it filters <code>WS_EX_TOOLWINDOW</code> and windows DWM reports as
+					<code>DWMWA_CLOAKED</code> — the flag UWP apps and windows parked on an inactive virtual
+					desktop carry while technically still "visible" by every other Win32 test.
+				</p>
+				<p>
+					Activating the chosen window goes through the standard workaround for
+					<code>SetForegroundWindow</code>'s focus-stealing restriction: temporarily
+					<code>AttachThreadInput</code> to whatever thread currently owns the foreground window,
+					so Windows treats the activation as coming from the already-focused thread instead of an
+					unrelated background process, then detach immediately after:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/WindowList.cpp#L118-L139" target="_blank" rel="noopener">Switchr/src/WindowList.cpp#L118-L139</a>.
+					A hung target window (<code>IsHungAppWindow</code>) skips all of that and just gets an
+					async restore, since attaching thread input to a window that isn't pumping messages
+					would hang the switcher too.
+				</p>
+
+				<h2>Search: multi-term AND matching with position-weighted scoring</h2>
+				<p>
+					Typing splits the query on whitespace into lowercase terms, and every term must appear in
+					either the window title or the exe name for a window to survive at all — a genuine AND,
+					not a fuzzy edit-distance match:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp#L93-L115" target="_blank" rel="noopener">Switchr/src/Overlay.cpp#L93-L115</a>.
+					Within that, the score rewards a term matching at position 0 heavily (a prefix match on
+					the title outscores a mid-string match by more than 3:1), gives a smaller bonus for
+					matching the exe name, and adds a mild bias toward shorter titles so that, all else
+					equal, "Notepad" ranks above "Notepad — some/long/path/deep/in/a/tree.txt". Results are
+					then sorted by score first and MRU rank as the tiebreaker, so among equally good text
+					matches the window you touched most recently still wins:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp#L735-L745" target="_blank" rel="noopener">L735-L745</a>.
+				</p>
+
+				<h2>Namespaces: hiding windows without the taskbar flicker</h2>
+				<p>
+					Switching a namespace means showing one set of windows and hiding another, batched
+					through <code>BeginDeferWindowPos</code>/<code>EndDeferWindowPos</code> so the whole
+					transition applies as one atomic update instead of a visible flash as windows disappear
+					one by one:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp#L120-L136" target="_blank" rel="noopener">Switchr/src/Namespaces.cpp#L120-L136</a>.
+					Before that, every window involved gets <code>DWMWA_TRANSITIONS_FORCEDISABLED</code> set
+					so DWM's own show/hide animation doesn't fight the deferred move, and it's restored right
+					after — otherwise a whole workspace of windows animating in and out at once looks like
+					the desktop falling apart rather than a clean switch:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp#L102-L118" target="_blank" rel="noopener">L102-L118</a>.
+				</p>
+				<p>
+					New windows are auto-assigned to the active namespace via two more WinEvent hooks —
+					<code>EVENT_OBJECT_SHOW</code> and <code>EVENT_OBJECT_DESTROY</code> — rather than any
+					polling loop:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp#L418-L427" target="_blank" rel="noopener">Switchr/src/Namespaces.cpp#L418-L427</a>.
+					"Load and launch missing apps" (<code>Ctrl+Shift+L</code>) has to solve a timing problem:
+					the process it just launched doesn't have a window yet, so its eventual window can't be
+					assigned to a namespace synchronously. Instead the launch records a
+					<code>PendingAssign</code> — expected exe name, target namespace, timestamp — with a
+					two-minute TTL, and the next <code>EVENT_OBJECT_SHOW</code> for a matching exe consumes
+					it and drops the entry if the launch never produced a window in time:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp#L173-L189" target="_blank" rel="noopener">Switchr/src/Namespaces.cpp#L173-L189</a>.
+				</p>
+				<p>
+					The saved layout itself is a deliberately simple line-based UTF-8 format under
+					<code>%APPDATA%\Switchr\namespaces.txt</code> — a <code>ns&lt;TAB&gt;name</code> line
+					starts each namespace, and following <code>app&lt;TAB&gt;path</code> lines list its apps,
+					with file order doubling as namespace order:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp#L162-L166" target="_blank" rel="noopener">Switchr/src/Namespaces.cpp#L162-L166</a>.
+				</p>
+
+				<h2>Per-monitor DPI, properly</h2>
+				<p>
+					The app manifest declares <code>PerMonitorV2</code> DPI awareness
+					(<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/app.manifest" target="_blank" rel="noopener">Switchr/app.manifest</a>),
+					and the overlay reads <code>GetDpiForWindow</code> both on creation and on
+					<code>WM_DPICHANGED</code>, so dragging the overlay's owning monitor setup around — or
+					just opening it on a monitor at a different scale than the last one — keeps every DIP
+					constant measurement (tile size, gaps, font size) crisp instead of blurry or
+					mis-scaled. The overlay itself always opens on the monitor of the current foreground
+					window, resolved through <code>MonitorFromWindow</code>, not wherever the mouse cursor
+					happens to be:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp#L555-L563" target="_blank" rel="noopener">Switchr/src/Overlay.cpp#L555-L563</a>.
+				</p>
+
+				<h2>No installer, no admin, one instance</h2>
+				<p>
+					The manifest requests <code>asInvoker</code> execution — Switchr never needs to elevate,
+					which matters because a non-elevated Switchr can't <code>AttachThreadInput</code> to or
+					activate a window owned by an elevated process, a real limitation the project accepts
+					rather than asking users to run it as admin. A single named mutex enforces one running
+					instance:
+					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/main.cpp#L140" target="_blank" rel="noopener">Switchr/src/main.cpp#L140</a>,
+					and the whole thing ships as one exe with no install step — the tray icon and a
+					<code>RegisterHotKey</code> global hotkey are the entire footprint on the running system.
+				</p>
+
+				<h2>The stack, in one place</h2>
+				<ul class="article-highlights">
+					<li><strong>C++17</strong> directly on Win32 — no UI framework, no game engine.</li>
+					<li><strong>Direct3D 11 + DirectComposition + Direct2D + DirectWrite</strong> for GPU-composited rendering, with server-side (compositor-thread) opacity animation.</li>
+					<li><strong>DWM thumbnails</strong> (<code>DwmRegisterThumbnail</code>) for live tile previews instead of captured bitmaps.</li>
+					<li><strong>WinEvent hooks</strong> (<code>EVENT_SYSTEM_FOREGROUND</code>, <code>EVENT_OBJECT_SHOW</code>/<code>DESTROY</code>) drive MRU tracking and namespace auto-assignment — no polling anywhere.</li>
+					<li><strong>PerMonitorV2 DPI awareness</strong> declared in the app manifest, with live <code>WM_DPICHANGED</code> handling.</li>
+					<li>A hand-written multi-term search ranker (position-weighted, MRU-tiebroken) over window titles and exe names.</li>
+					<li>Plain line-based UTF-8 persistence for namespace layouts under <code>%APPDATA%</code> — no database, no serialization library.</li>
+					<li><strong>asInvoker</strong>, single-instance via a named mutex, zero-install single exe.</li>
+				</ul>
+
+				<p class="article-footer-note">
+					Source: <a href="https://github.com/tomas-trachta/Switchr" target="_blank" rel="noopener">github.com/tomas-trachta/Switchr</a>.
+				</p>
+			</div>
+		</article>
+	</main>
+
+	<footer class="footer">
+		<p>&copy; <span id="year"></span> Tomáš Trachta</p>
+	</footer>
+
+	<script>document.getElementById("year").textContent = new Date().getFullYear();</script>
+</body>
+</html>

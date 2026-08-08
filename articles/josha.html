@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Inside Josha — technologies and approaches | Tomáš Trachta</title>
+	<meta name="description" content="A technical walkthrough of Josha, a dual-pane WPF file manager: the file-system provider abstraction, FTP/SFTP connection pooling, edit-on-server, snapshot-backed disk usage, and canvas-based tree virtualization.">
+	<link rel="stylesheet" href="../assets/css/style.css">
+	<link rel="stylesheet" href="../assets/css/article.css">
+</head>
+<body>
+	<header class="nav">
+		<div class="nav-inner">
+			<a class="brand" href="../index.html#top">Tomáš Trachta</a>
+			<nav class="nav-links">
+				<a href="../index.html#projects">Projects</a>
+				<a href="../index.html#about">About</a>
+				<a href="../index.html#cv">CV</a>
+				<a href="../index.html#contact">Contact</a>
+			</nav>
+		</div>
+	</header>
+
+	<main>
+		<article class="article">
+			<div class="article-inner">
+				<p class="article-back"><a href="../index.html#projects">← Back to projects</a></p>
+				<p class="eyebrow">Josha</p>
+				<h1>Technologies and approaches behind Josha</h1>
+				<p class="article-lede">
+					Josha is a dual-pane, keyboard-driven file manager for Windows, built on .NET 9 and WPF.
+					It aims at the same muscle memory as Total Commander — two panes, function-key operations,
+					instant navigation — but adds first-class FTP/FTPS/SFTP sites, a disk-usage tree rendered
+					on a virtualized canvas, and a background job queue for copies and transfers. This is a
+					walkthrough of the parts of the codebase that make those features work, with links straight
+					to the source.
+				</p>
+
+				<h2>One provider abstraction, three back ends</h2>
+				<p>
+					Every pane operation — enumerate, copy, move, rename, delete, open a stream — goes through
+					<code>IFileSystemProvider</code>. The local file system, FTP/FTPS, and SFTP each implement
+					it, so the pane view models never branch on which kind of site they're looking at.
+					<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/IFileSystemProvider.cs#L18-L65" target="_blank" rel="noopener">Business/IFileSystemProvider.cs#L18-L65</a>
+				</p>
+				<p>
+					The interesting bit is <code>ProviderId</code>
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/IFileSystemProvider.cs#L24" target="_blank" rel="noopener">L24</a>).
+					Local shares one identity across both panes; every remote site gets its own. When the file
+					operation queue picks between a same-provider copy and a cross-provider import, it's just
+					comparing that string:
+				</p>
+				<pre><code>if (req.SrcProvider.ProviderId == req.DstProvider.ProviderId)
+    return await req.DstProvider.CopyAsync(req.SrcPath, req.DstPath, progress, req.Overwrite, ct);
+return await req.DstProvider.ImportFromAsync(req.SrcProvider, req.SrcPath, req.DstPath, progress, req.Overwrite, ct);</code></pre>
+				<p>
+					<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L105-L111" target="_blank" rel="noopener">Services/FileOperationQueue.cs#L105-L111</a>.
+					That single check is what turns "drag a file from the left pane to the right pane" into
+					either a local copy, an FTP upload, or an SFTP download, with no special-casing anywhere
+					above it. Cross-provider moves reuse the same import path and only delete the source once
+					the copy has actually succeeded, so a failed delete leaves a duplicate instead of losing
+					data — <a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L119-L126" target="_blank" rel="noopener">L119-L126</a>.
+				</p>
+				<p>
+					A provider also declares whether it <code>SupportsTreeGraph</code>
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/IFileSystemProvider.cs#L28-L30" target="_blank" rel="noopener">L28-L30</a>) —
+					the disk-usage view needs a full recursive snapshot, which only makes sense for local
+					drives, so the pane simply greys out the shortcut for remote sites instead of the view
+					model needing to know why.
+				</p>
+
+				<h2>FTP and SFTP: pooled connections, not one-shot clients</h2>
+				<p>
+					Remote sites are backed by <a href="https://www.nuget.org/packages/FluentFTP" target="_blank" rel="noopener">FluentFTP</a>
+					for FTP/FTPS and <a href="https://www.nuget.org/packages/SSH.NET" target="_blank" rel="noopener">SSH.NET</a>
+					for SFTP, both sitting behind a shared <code>IRemoteClient</code> interface
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/Ftp/IRemoteClient.cs" target="_blank" rel="noopener">Business/Ftp/IRemoteClient.cs</a>).
+					Opening a control connection per operation would make every remote listing feel like a
+					page load, so <code>RemoteConnectionPool</code> keeps up to <code>MaxConnectionsPerSite</code>
+					live clients per site and recycles them across operations, closing a client only after it's
+					sat idle for <code>IdleSeconds</code>:
+					<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/Ftp/RemoteConnectionPool.cs#L16-L41" target="_blank" rel="noopener">Business/Ftp/RemoteConnectionPool.cs#L16-L41</a>.
+				</p>
+				<p>
+					The acquire/release pattern is an <code>await using</code> lease — if an operation fails
+					with a connection-level fault, the caller marks the lease faulted so the pool disposes the
+					client instead of handing a half-dead connection to the next caller. The file operation
+					queue defaults to <code>MaxConcurrent = 3</code> precisely because a single site's pool
+					only holds 2 connections; that leaves room for a local copy to run alongside a remote
+					transfer without starving either
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L10-L14" target="_blank" rel="noopener">Services/FileOperationQueue.cs#L10-L14</a>).
+				</p>
+
+				<h2>Edit-on-server, without a per-file watcher</h2>
+				<p>
+					Pressing F4 on a remote file downloads it to a temp folder, launches the user's default
+					editor, and uploads the result back on save. The tricky part is detecting "save" reliably:
+					most editors don't write to the target file directly, they write a sibling temp file and
+					rename it over the original, which a <code>FileSystemWatcher</code> scoped to the single
+					file would miss entirely. <code>EditOnServerWatcher</code> instead watches the containing
+					temp directory and listens for both <code>Changed</code> and <code>Renamed→target</code>
+					events, debounces 400&nbsp;ms because editors fire multiple events per save, and hashes the
+					file before each upload so an editor's on-load "changed" burst or an unmodified save
+					doesn't trigger a redundant upload:
+					<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/EditOnServerWatcher.cs#L10-L22" target="_blank" rel="noopener">Services/EditOnServerWatcher.cs#L10-L22</a>.
+					The actual upload goes back through the same <code>RemoteConnectionPool</code> as every
+					other transfer, so it isn't a special code path competing for connections.
+				</p>
+
+				<h2>Disk usage: an encrypted, incrementally-reconciled snapshot</h2>
+				<p>
+					The disk-usage tree needs a full recursive walk of a drive, which is too slow to redo on
+					every open. Josha instead persists a tree snapshot per drive letter to
+					<code>josha_data\tree.&lt;letter&gt;.daps</code>
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs#L24-L31" target="_blank" rel="noopener">Business/SnapshotComponent.cs#L24-L31</a>),
+					a flattened, indentation-delimited text format encoding each directory's name, size,
+					child counts, and last-write time, then encrypts it with Windows DPAPI scoped to the
+					current user before writing it to disk
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs#L91-L104" target="_blank" rel="noopener">L91-L104</a>,
+					<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/CryptoComponent.cs#L6-L18" target="_blank" rel="noopener">Business/CryptoComponent.cs#L6-L18</a>).
+					Each caller supplies its own entropy value so one DPAPI-protected file can't be decrypted
+					by unrelated code running as the same user, and because DPAPI keys are tied to the user
+					profile and machine, a copied snapshot file is unreadable on another PC — it just gets
+					rebuilt on the next scan instead of crashing
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs#L127-L156" target="_blank" rel="noopener">L127-L156</a>).
+				</p>
+				<p>
+					Loading a snapshot is cheap, but trusting it blindly would show stale data. Reconciliation
+					makes that fast by leaning on an NTFS guarantee: a directory's own last-write time changes
+					whenever an entry is added, removed, or renamed directly inside it. So for a snapshot
+					directory whose on-disk mtime still matches the cached one, Josha skips both
+					<code>FindFirstFileEx</code> enumerations it would otherwise need and just recurses into
+					children — a single <code>GetFileAttributesEx</code> syscall stands in for a full directory
+					listing:
+					<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs#L393-L425" target="_blank" rel="noopener">Business/SnapshotComponent.cs#L393-L425</a>.
+					Only directories whose mtime actually changed fall through to the slower path that
+					diffs the real child list against the cached one by name.
+				</p>
+				<p>
+					Reconciliation also parallelizes, but only at the top two levels of the tree
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs#L514-L542" target="_blank" rel="noopener">L514-L542</a>),
+					mirroring the same restraint in the initial scan: nesting <code>Parallel.ForEach</code>
+					calls saturates the .NET thread pool faster than it can grow (roughly one new thread every
+					500&nbsp;ms), which shows up as low CPU usage and a stalled UI rather than a fast scan —
+					fanning out once at the root, with ~20-30 subdirectories under a typical <code>C:\</code>,
+					already gives the scheduler plenty to chew on
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/ScanCore.cs#L73-L95" target="_blank" rel="noopener">Business/ScanCore.cs#L73-L95</a>).
+					The degree of parallelism is also capped at <code>ProcessorCount - 1</code> so the
+					dispatcher thread always keeps a core free for the loading-bar animation and UI bindings
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/ScanCore.cs#L97-L110" target="_blank" rel="noopener">L97-L110</a>).
+					The project also opts into server GC with concurrent collection in the csproj, specifically
+					to absorb the high allocation rate of that parallel scan without the long gen-2 pauses
+					workstation GC would cause.
+				</p>
+
+				<h2>Rendering a tree with hundreds of thousands of nodes</h2>
+				<p>
+					The disk-usage view is a custom <code>TreeGraphControl</code> that draws directly with
+					WPF's <code>DrawingContext</code> rather than binding a <code>TreeView</code> to a huge
+					item source — a drive with hundreds of thousands of files would make a real-control
+					approach fall over. Instead, the control lays every visible node out into a flat array of
+					rectangles once, then a binary search over that array finds the first and last node
+					intersecting the current viewport on every scroll or zoom:
+					<a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs#L353-L385" target="_blank" rel="noopener">Views/TreeGraphControl.xaml.cs#L353-L385</a>.
+				</p>
+				<p>
+					Only that visible slice (plus a small buffer of
+					<a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs#L21" target="_blank" rel="noopener">5 rows</a>
+					above and below, to absorb scroll momentum) gets real WPF elements on the canvas; anything
+					that scrolls out is removed and its visual is reused if the same node scrolls back in
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs#L387-L438" target="_blank" rel="noopener">L387-L438</a>).
+					The connecting lines between nodes are drawn separately, once per frame, into a single
+					shared <code>DrawingVisual</code> instead of one shape per edge
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs#L452-L459" target="_blank" rel="noopener">L452-L459</a>),
+					which keeps the visual tree small regardless of how deep or wide the expanded tree gets.
+					Brushes and pens used for node chrome are all frozen at class-init time
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs#L46-L67" target="_blank" rel="noopener">L46-L67</a>),
+					which lets WPF share them across threads and skip change-notification overhead entirely.
+				</p>
+
+				<h2>The transfer queue: one Channel, N workers</h2>
+				<p>
+					Copies, moves, uploads, and downloads all funnel into <code>FileOperationQueue</code>,
+					which is a thin wrapper around an unbounded <code>System.Threading.Channels.Channel</code>
+					with a fixed pool of worker loops reading from it
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L19-L34" target="_blank" rel="noopener">Services/FileOperationQueue.cs#L19-L34</a>).
+					Enqueuing a job immediately adds a view model to an <code>ObservableCollection</code> so
+					the queue panel updates the instant you drop a file, but that mutation is always dispatched
+					onto the UI thread first — mutating an <code>ObservableCollection</code> off-thread is a
+					reliable way to crash a bound <code>ItemsControl</code>
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L36-L43" target="_blank" rel="noopener">L36-L43</a>).
+					Completed and cancelled jobs clear themselves from the panel after a short delay; failed
+					jobs stay until retried or dismissed, so a failure is never something you have to have
+					caught in the moment to notice
+					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L129-L143" target="_blank" rel="noopener">L129-L143</a>).
+				</p>
+
+				<h2>The stack, in one place</h2>
+				<ul class="article-highlights">
+					<li><strong>.NET 9 / WPF</strong> — <code>net9.0-windows</code>, server + concurrent GC, C# nullable reference types throughout.</li>
+					<li><strong>FluentFTP</strong> and <strong>SSH.NET</strong> for FTP/FTPS and SFTP, unified behind one provider interface.</li>
+					<li><strong>Vanara.PInvoke.Shell32</strong> for native shell context-menu integration.</li>
+					<li><strong>Windows DPAPI</strong> for at-rest encryption of snapshots and site credentials, with per-component entropy.</li>
+					<li><strong>System.Threading.Channels</strong> for the background transfer queue, <strong>Parallel.ForEach</strong> (capped and shallow) for disk scanning.</li>
+					<li>Direct <code>DrawingContext</code>/<code>DrawingVisual</code> rendering with manual viewport virtualization for the disk-usage canvas.</li>
+					<li>A dedicated <a href="https://github.com/tomas-trachta/Josha/tree/main/tests/Josha.IntegrationTests" target="_blank" rel="noopener">integration test project</a> exercising the local, FTPS, and SFTP providers against real fixtures.</li>
+				</ul>
+
+				<p class="article-footer-note">
+					Source: <a href="https://github.com/tomas-trachta/Josha" target="_blank" rel="noopener">github.com/tomas-trachta/Josha</a>.
+				</p>
+			</div>
+		</article>
+	</main>
+
+	<footer class="footer">
+		<p>&copy; <span id="year"></span> Tomáš Trachta</p>
+	</footer>
+
+	<script>document.getElementById("year").textContent = new Date().getFullYear();</script>
+</body>
+</html>

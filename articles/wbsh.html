@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Inside wbsh — technologies and approaches | Tomáš Trachta</title>
+	<meta name="description" content="A technical walkthrough of wbsh, a Bash-compatible shell for Windows: the lexer/parser/AST/expander pipeline, arena allocation, POSIX↔Win32 path translation, ghost-text line editing, and native console integration.">
+	<link rel="stylesheet" href="../assets/css/style.css">
+	<link rel="stylesheet" href="../assets/css/article.css">
+</head>
+<body>
+	<header class="nav">
+		<div class="nav-inner">
+			<a class="brand" href="../index.html#top">Tomáš Trachta</a>
+			<nav class="nav-links">
+				<a href="../index.html#projects">Projects</a>
+				<a href="../index.html#about">About</a>
+				<a href="../index.html#cv">CV</a>
+				<a href="../index.html#contact">Contact</a>
+			</nav>
+		</div>
+	</header>
+
+	<main>
+		<article class="article">
+			<div class="article-inner">
+				<p class="article-back"><a href="../index.html#projects">← Back to projects</a></p>
+				<p class="eyebrow">wbsh</p>
+				<h1>Technologies and approaches behind wbsh</h1>
+				<p class="article-lede">
+					wbsh is a Bash-compatible shell for Windows, written from scratch in C++17 as a
+					drop-in replacement for Git Bash — without the MSYS2 layer underneath it. That means
+					no POSIX-emulation DLL translating syscalls, a real shell-grammar front end instead of
+					a regex approximation, and a single self-contained binary. Here's how the pieces fit
+					together, with links straight to the source.
+				</p>
+
+				<h2>A real front end: lexer → parser → AST → expander</h2>
+				<p>
+					Input text goes through four distinct stages rather than one big string-munging pass.
+					The lexer turns raw text into a token stream, but deliberately stops short of
+					interpreting expansions — <code>$(...)</code>, <code>${...}</code>,
+					<code>$((...))</code> bodies are captured as raw text spans and handed to later stages,
+					because getting their extents right (nested quotes, nested parens) is already the hard
+					part:
+					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lexer.h#L1-L17" target="_blank" rel="noopener">src/lexer.h#L1-L17</a>.
+					Heredocs are also resolved at this stage — the lexer remembers the delimiter and slurps
+					lines until it's matched, before the parser ever sees them.
+				</p>
+				<p>
+					The parser builds an AST of tagged-union nodes (<code>Node::Kind</code>) rather than a
+					class hierarchy with RTTI, because the executor dispatches on that tag with a plain
+					<code>switch</code> instead of virtual calls:
+					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/ast.h#L1-L20" target="_blank" rel="noopener">src/ast.h#L1-L20</a>.
+					Every node also carries a borrowed pointer into the original source text, so the
+					executor can slice out the exact substring a construct was parsed from — used for
+					self-spawned subshells and for reconstructing function bodies in <code>declare -f</code>
+					output.
+				</p>
+				<p>
+					Finally the expander walks the AST's <code>Word</code> segments and turns them into
+					real strings — glob expansion, parameter expansion, brace expansion, and command
+					substitution all happen here, after parsing, not intermixed with it.
+				</p>
+
+				<h2>Bump-allocated ASTs: one arena, no per-node heap traffic</h2>
+				<p>
+					Every node the parser creates comes from an <code>Arena</code> — a bump-pointer
+					allocator that hands out memory from 16&nbsp;KB chunks instead of calling
+					<code>new</code> per node. A whole parsed script costs a handful of chunk allocations
+					instead of one <code>malloc</code> per AST node, and teardown is a single reverse pass
+					over recorded destructors instead of a recursive ownership chain:
+					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/arena.h#L1-L18" target="_blank" rel="noopener">src/arena.h#L1-L18</a>.
+					Pointers returned by <code>Arena::make()</code>
+					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/arena.h#L50-L64" target="_blank" rel="noopener">L50-L64</a>)
+					are deliberately raw and non-owning — the arena owns everything, nodes just borrow from
+					it, which is what lets the AST have no vtables and no reference counting at all.
+				</p>
+
+				<h2>Control flow as a value, not an exception</h2>
+				<p>
+					<code>break</code>, <code>continue</code>, <code>return</code>, and <code>exit</code>
+					don't unwind the C++ call stack via <code>throw</code>. They set a <code>FlowSignal</code>
+					on the <code>Executor</code> — a plain struct with a kind, a status code, and a
+					loop-nesting count for multi-level <code>break N</code>
+					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/executor.h#L36-L58" target="_blank" rel="noopener">src/executor.h#L36-L58</a>).
+					Every frame checks <code>flowPending()</code>
+					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/executor.h#L286" target="_blank" rel="noopener">L286</a>)
+					after running a child node and returns early if a signal is live; the frame that
+					actually owns the construct — the loop, the function call, the subshell, the top-level
+					driver — is the one that calls <code>consumeFlow()</code>
+					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/executor.h#L316" target="_blank" rel="noopener">L316</a>)
+					and stops the signal from propagating further. It reads like manual exception handling
+					because that's exactly what it is, done explicitly so control flow stays visible in the
+					executor's own logic instead of hiding in a C++ unwind.
+				</p>
+
+				<h2>POSIX ↔ Win32 path translation</h2>
+				<p>
+					<code>PathConv</code> is a Cygwin/MSYS-style mount table: <code>/c/Users/...</code> maps
+					to <code>C:\Users\...</code>, <code>/tmp</code> maps to <code>%TEMP%</code>,
+					<code>/dev/null</code> maps to <code>NUL</code>, and so on, with both directions being
+					idempotent so re-translating an already-native path is a no-op:
+					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.h#L58-L106" target="_blank" rel="noopener">src/pathconv.h#L58-L106</a>.
+					When wbsh spawns a native argument, it only translates the ones that look like they need
+					it — starts with <code>/</code>, isn't a flag, isn't a URL, isn't a bare
+					<code>/</code> — and for <code>--opt=PATH</code>-style arguments it translates just the
+					value side:
+					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp#L346-L379" target="_blank" rel="noopener">src/pathconv.cpp#L346-L379</a>.
+				</p>
+				<p>
+					Two subtler problems live in the same file. First, MSVC's
+					<code>std::filesystem::path(std::string)</code> interprets narrow strings through the
+					active codepage, not UTF-8, so a name like "Tomáš" silently mangles into mojibake on
+					disk unless every path is round-tripped through a wide string first — the reason
+					<code>utf8ToPath</code> / <code>pathToUtf8</code> exist at all
+					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.h#L1-L20" target="_blank" rel="noopener">src/pathconv.h#L1-L20</a>).
+					Second, when wbsh hands <code>HOME</code> to a MinGW-built child (Git for Windows and
+					friends), that child's ANSI <code>getenv</code> reads the environment block through the
+					same active codepage and can mangle non-ASCII usernames the same way — so
+					<code>toWin32Short()</code> converts to the legacy 8.3 short path
+					(<code>C:\Users\TOMA~1</code>), which is pure ASCII and survives any transcoding,
+					falling back to the long form only when the path is already ASCII or the volume has
+					8.3 name generation disabled:
+					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp#L248-L291" target="_blank" rel="noopener">src/pathconv.cpp#L248-L291</a>.
+				</p>
+
+				<h2>Line editing: ghost-text prediction that knows what failed</h2>
+				<p>
+					The interactive line editor implements PowerShell-style inline prediction: as you type,
+					the rest of the best-matching history entry is rendered as dim text past the cursor, and
+					<code>→</code> at the end of the line accepts it. The matching function scans history
+					newest-first for the first entry that starts with the typed prefix — but skips any entry
+					whose last execution exited non-zero, via a parallel exit-status vector, so a typo you
+					already made once never gets re-suggested:
+					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lineedit.h#L61-L84" target="_blank" rel="noopener">src/lineedit.h#L61-L84</a>.
+				</p>
+				<p>
+					Reverse-incremental search (<code>Ctrl-R</code>) is a small pure function over the same
+					history vector — scan backward or forward from a start index for the first entry
+					containing the query as a substring — which keeps the search logic testable independent
+					of the raw-mode console loop that drives it
+					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lineedit.h#L40-L56" target="_blank" rel="noopener">src/lineedit.h#L40-L56</a>).
+					On a real console the editor runs a raw-mode loop with cursor movement, kill ring, and
+					Unicode-aware redraw; on piped stdin (scripts, tests) it transparently falls back to a
+					line-buffered read loop, so the same binary drives both an interactive TTY and
+					<code>wbsh -r script.sh &lt; input</code> without a separate code path for either.
+				</p>
+
+				<h2>Fitting into a real Windows console</h2>
+				<p>
+					Rather than drawing its own terminal, wbsh enables
+					<code>ENABLE_VIRTUAL_TERMINAL_PROCESSING</code> on the console's output mode so ANSI
+					escape sequences render natively in conhost, Windows Terminal, VS Code, and JetBrains
+					terminals, and only falls back to plain output if that mode can't be set
+					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/repl.cpp#L463-L466" target="_blank" rel="noopener">src/repl.cpp#L463-L466</a>).
+					It also paints its own console window to match: <code>DwmSetWindowAttribute</code> flips
+					on immersive dark mode and tints the caption and border to the shell's palette on Win11,
+					falling back to the pre-1903 dark-mode constant and silently ignoring the caption/border
+					calls on older systems that don't support them
+					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/repl.cpp#L84-L99" target="_blank" rel="noopener">src/repl.cpp#L84-L99</a>).
+				</p>
+
+				<h2>Bundled coreutils, one binary</h2>
+				<p>
+					<code>ls</code>, <code>grep</code>, <code>sed</code>, <code>awk</code>, <code>find</code>,
+					<code>xargs</code>, <code>tar</code>, <code>gzip</code>, <code>curl</code>, and a few
+					dozen more are implemented directly in the shell binary rather than shelled out to
+					separate executables — the coreutils sources alone
+					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/coreutils.cpp" target="_blank" rel="noopener">coreutils.cpp</a>,
+					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/coreutils_text.cpp" target="_blank" rel="noopener">coreutils_text.cpp</a>,
+					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/awk.cpp" target="_blank" rel="noopener">awk.cpp</a>,
+					and siblings for archives, hashing, and bc-style arithmetic) run to several thousand
+					lines. That's what makes a fresh install scriptable immediately, with no MSYS DLL, no
+					Cygwin layer, and nothing extra to fetch — the resulting exe is roughly 1&nbsp;MB, and
+					the installer adds only the VC++ runtime on top of it. System tools like <code>git</code>,
+					<code>vim</code>, and <code>less</code> are still auto-discovered on <code>PATH</code>
+					and invoked as native processes when present; wbsh only replaces the layer that used to
+					require MSYS.
+				</p>
+
+				<h2>Testing: the suite is written in wbsh, run by wbsh</h2>
+				<p>
+					The 44-plus-script test suite isn't driven by an external test runner — it's a wbsh
+					script (<a href="https://github.com/tomas-trachta/wbsh/blob/main/tests/run-all.sh" target="_blank" rel="noopener">tests/run-all.sh</a>)
+					that <code>wbsh -r</code> executes, which in turn runs every other <code>.sh</code> file
+					in the directory through the same shell. It checks exit codes against expectations and,
+					in golden mode, diffs combined stdout+stderr against recorded fixtures under
+					<code>tests/expected/</code>
+					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/tests/run-all.sh#L1-L22" target="_blank" rel="noopener">tests/run-all.sh#L1-L22</a>),
+					with a small deny-list of scripts excluded from golden comparison because their output
+					is inherently machine-specific (dates, hostnames, native command output). Every run of
+					the suite is itself exercising the parser, the expander, functions, control flow, and
+					the bundled coreutils — the shell testing itself with itself.
+				</p>
+
+				<h2>The stack, in one place</h2>
+				<ul class="article-highlights">
+					<li><strong>C++17</strong>, no external shell-parsing library — hand-written lexer, recursive-descent parser, AST, and expander.</li>
+					<li><strong>Arena / bump allocation</strong> for AST nodes: no per-node heap allocation, no vtables, no reference counting.</li>
+					<li>Control flow (<code>break</code>/<code>continue</code>/<code>return</code>/<code>exit</code>) modeled as an explicit signal value, not C++ exceptions.</li>
+					<li><strong>PathConv</strong>: a Cygwin/MSYS-style mount table for POSIX↔Win32 path translation, plus UTF-8-safe filesystem path handling and 8.3 short-path fallback for MinGW children.</li>
+					<li>A raw-mode line editor with persistent history, kill ring, tab completion, reverse-incremental search, and failure-aware inline prediction.</li>
+					<li>Native console integration via <code>ENABLE_VIRTUAL_TERMINAL_PROCESSING</code> and DWM immersive dark mode — no bundled terminal emulator.</li>
+					<li>Dozens of bundled coreutils compiled directly into the binary — no MSYS/Cygwin layer, ~1&nbsp;MB executable.</li>
+					<li>A <a href="https://github.com/tomas-trachta/wbsh/tree/main/tests" target="_blank" rel="noopener">44-script golden test suite</a> written in and executed by wbsh itself.</li>
+				</ul>
+
+				<p class="article-footer-note">
+					Source: <a href="https://github.com/tomas-trachta/wbsh" target="_blank" rel="noopener">github.com/tomas-trachta/wbsh</a>.
+				</p>
+			</div>
+		</article>
+	</main>
+
+	<footer class="footer">
+		<p>&copy; <span id="year"></span> Tomáš Trachta</p>
+	</footer>
+
+	<script>document.getElementById("year").textContent = new Date().getFullYear();</script>
+</body>
+</html>
