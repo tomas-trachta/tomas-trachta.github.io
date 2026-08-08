@@ -32,30 +32,97 @@
 					drop-in replacement for Git Bash — without the MSYS2 layer underneath it. That means
 					no POSIX-emulation DLL translating syscalls, a real shell-grammar front end instead of
 					a regex approximation, and a single self-contained binary. Here's how the pieces fit
-					together, with links straight to the source.
+					together, with real snippets from the source (trimmed for length; <code>// …</code>
+					marks an elision).
 				</p>
 
 				<h2>A real front end: lexer → parser → AST → expander</h2>
 				<p>
 					Input text goes through four distinct stages rather than one big string-munging pass.
-					The lexer turns raw text into a token stream, but deliberately stops short of
-					interpreting expansions — <code>$(...)</code>, <code>${...}</code>,
-					<code>$((...))</code> bodies are captured as raw text spans and handed to later stages,
-					because getting their extents right (nested quotes, nested parens) is already the hard
-					part:
-					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lexer.h#L1-L17" target="_blank" rel="noopener">src/lexer.h#L1-L17</a>.
-					Heredocs are also resolved at this stage — the lexer remembers the delimiter and slurps
-					lines until it's matched, before the parser ever sees them.
+					The lexer turns raw text into a token stream of operators and words:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/lexer.h</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lexer.h" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>enum class TokKind {
+    Word,            // generic word; reserved words detected at parse time
+    IoNumber,        // digits immediately followed by '&lt;' or '&gt;' (no space)
+    Newline,
+    EndOfInput,
+
+    AndIf,           // &amp;&amp;
+    OrIf,            // ||
+    DSemi,           // ;;
+    SemiAmp,         // ;&amp;     (bash, fall-through case terminator)
+    DSemiAmp,        // ;;&amp;    (bash)
+    Semi,            // ;
+    Amp,             // &amp;
+    Pipe,            // |
+    PipeAmp,         // |&amp;     (bash, equivalent to 2&gt;&amp;1 |)
+    LParen,          // (
+    RParen,          // )
+
+    Less,            // &lt;
+    Great,           // &gt;
+    DLess,           // &lt;&lt;
+    // …
+};</code></pre>
+				</div>
+				<p>
+					Reserved words aren't separate token kinds — <code>if</code>, <code>for</code>, and
+					friends all come back as a plain <code>Word</code> and get recognized later, at parse
+					time, from their raw text. The bodies of <code>$(...)</code>, <code>${...}</code>,
+					<code>$((...))</code> are captured as raw text spans and handed to later stages, because
+					getting their extents right (nested quotes, nested parens) is already the hard part.
+					Heredoc bodies are also captured here: when a <code>&lt;&lt;</code> operator and its
+					delimiter word are seen, the lexer remembers the delimiter and, on the next newline,
+					slurps lines until the delimiter is matched.
 				</p>
 				<p>
 					The parser builds an AST of tagged-union nodes (<code>Node::Kind</code>) rather than a
 					class hierarchy with RTTI, because the executor dispatches on that tag with a plain
-					<code>switch</code> instead of virtual calls:
-					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/ast.h#L1-L20" target="_blank" rel="noopener">src/ast.h#L1-L20</a>.
-					Every node also carries a borrowed pointer into the original source text, so the
-					executor can slice out the exact substring a construct was parsed from — used for
-					self-spawned subshells and for reconstructing function bodies in <code>declare -f</code>
-					output.
+					<code>switch</code> instead of virtual calls. Every node also carries a borrowed
+					pointer into the original source text, so the executor can slice out the exact
+					substring a construct was parsed from — used for self-spawned subshells and for
+					reconstructing function bodies in <code>declare -f</code> output:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/ast.h</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/ast.h" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>struct Node {
+    enum class Kind {
+        SimpleCommand,  ///&lt; `simple_command` — words + assignments + redirs.
+        Pipeline,       ///&lt; `cmd | cmd | cmd` (with optional `!` and `time`).
+        AndOr,          ///&lt; `cmd &amp;&amp; cmd` / `cmd || cmd`.
+        List,           ///&lt; Sequence of `cmd ;` or `cmd &amp;` items.
+        IfClause,       ///&lt; `if … then … [elif …] [else …] fi`.
+        WhileClause,    ///&lt; `while …` / `until …`.
+        ForClause,      ///&lt; `for var [in words]; do …; done`.
+        // …
+    };
+    Kind kind;                  ///&lt; Concrete subclass tag.
+    SourceLoc loc;              ///&lt; Position in the source.
+    std::size_t src_start = 0;  ///&lt; Inclusive byte offset in source.
+    std::size_t src_end   = 0;  ///&lt; Exclusive byte offset in source.
+    const std::string* source_text = nullptr;  // borrowed, arena-owned
+    explicit Node(Kind k) : kind(k) {}
+};
+
+struct SimpleCommand : Node {
+    SimpleCommand() : Node(Kind::SimpleCommand) {}
+    std::vector&lt;Assignment&gt; assignments;
+    std::vector&lt;Word&gt; words;
+    std::vector&lt;Redirection&gt; redirs;
+};</code></pre>
+				</div>
+				<p>
+					Every concrete node type derives from <code>Node</code> and sets its own
+					<code>Kind</code> in the constructor; the executor's dispatch is then a plain
+					<code>switch (node-&gt;kind)</code> that <code>static_cast</code>s to the concrete type
+					it already knows the tag implies — no <code>dynamic_cast</code>, no vtable lookup.
+					<code>src_start</code>/<code>src_end</code>/<code>source_text</code> are what let the
+					executor slice the original text for self-spawned subshells and for reconstructing
+					function bodies in <code>declare -f</code> output; <code>source_text</code> is a borrowed
+					pointer into a copy interned in the same <code>Arena</code> that owns the node, so
+					keeping the arena alive keeps the whole tree — and its source — valid.
 				</p>
 				<p>
 					Finally the expander walks the AST's <code>Word</code> segments and turns them into
@@ -70,29 +137,109 @@
 					<code>new</code> per node. A whole parsed script costs a handful of chunk allocations
 					instead of one <code>malloc</code> per AST node, and teardown is a single reverse pass
 					over recorded destructors instead of a recursive ownership chain:
-					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/arena.h#L1-L18" target="_blank" rel="noopener">src/arena.h#L1-L18</a>.
-					Pointers returned by <code>Arena::make()</code>
-					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/arena.h#L50-L64" target="_blank" rel="noopener">L50-L64</a>)
-					are deliberately raw and non-owning — the arena owns everything, nodes just borrow from
-					it, which is what lets the AST have no vtables and no reference counting at all.
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/arena.h</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/arena.h" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>/**
+ * @file arena.h
+ * @brief Bump-pointer memory arena for node-heavy structures (ASTs).
+ *
+ * Objects are allocated by bumping an offset inside large chunks, so a
+ * whole tree costs a handful of mallocs instead of one per node, nodes
+ * sit contiguously in memory, and teardown is one pass instead of a
+ * recursive ownership-pointer chain. Destructors of non-trivially-
+ * destructible objects are recorded at make() time and run (in reverse
+ * allocation order) when the arena is destroyed — so members like
+ * std::string / std::vector inside arena objects release normally.
+ *
+ * Arenas are move-only: whoever holds the Arena owns every object ever
+ * made from it. Pointers returned by make() are stable for the arena's
+ * lifetime and are deliberately raw — they are borrows, not owners.
+ */
+
+template &lt;typename T, typename... Args&gt;
+T* make(Args&amp;&amp;... args) {
+    // Chunks come from new[] and are aligned to the default new
+    // alignment; over-aligned types would need aligned chunks.
+    static_assert(alignof(T) &lt;= alignof(std::max_align_t),
+                  "Arena does not support over-aligned types");
+    void* mem = allocate(sizeof(T), alignof(T));
+    T* obj = new (mem) T(std::forward&lt;Args&gt;(args)...);
+    if constexpr (!std::is_trivially_destructible_v&lt;T&gt;) {
+        dtors_.push_back({ obj, [](void* p) {
+            static_cast&lt;T*&gt;(p)-&gt;~T();
+        } });
+    }
+    return obj;
+}</code></pre>
+				</div>
+				<p>
+					Pointers returned by <code>Arena::make()</code> are deliberately raw and non-owning —
+					the arena owns everything, nodes just borrow from it, which is what lets the AST have
+					no vtables and no reference counting at all.
 				</p>
 
 				<h2>Control flow as a value, not an exception</h2>
 				<p>
 					<code>break</code>, <code>continue</code>, <code>return</code>, and <code>exit</code>
-					don't unwind the C++ call stack via <code>throw</code>. They set a <code>FlowSignal</code>
-					on the <code>Executor</code> — a plain struct with a kind, a status code, and a
-					loop-nesting count for multi-level <code>break N</code>
-					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/executor.h#L36-L58" target="_blank" rel="noopener">src/executor.h#L36-L58</a>).
-					Every frame checks <code>flowPending()</code>
-					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/executor.h#L286" target="_blank" rel="noopener">L286</a>)
-					after running a child node and returns early if a signal is live; the frame that
-					actually owns the construct — the loop, the function call, the subshell, the top-level
-					driver — is the one that calls <code>consumeFlow()</code>
-					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/executor.h#L316" target="_blank" rel="noopener">L316</a>)
-					and stops the signal from propagating further. It reads like manual exception handling
-					because that's exactly what it is, done explicitly so control flow stays visible in the
-					executor's own logic instead of hiding in a C++ unwind.
+					don't unwind the C++ call stack via <code>throw</code>. Each builtin just sets a
+					<code>FlowSignal</code> on the <code>Executor</code> — a kind, a status code, and a
+					loop-nesting count — and returns normally:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/builtins.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/builtins.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>static int builtin_break(Executor&amp; exec, const std::vector&lt;std::string&gt;&amp; args) {
+    if (exec.loopDepth() == 0) {
+        printerr("break: only meaningful in a `for', `while', or `until' loop");
+        return 0;
+    }
+    exec.raiseBreak(firstArgAsInt(args, 1, /*require_positive=*/true));
+    return 0;
+}
+
+static int builtin_continue(Executor&amp; exec, const std::vector&lt;std::string&gt;&amp; args) {
+    if (exec.loopDepth() == 0) {
+        printerr("continue: only meaningful in a `for', `while', or `until' loop");
+        return 0;
+    }
+    exec.raiseContinue(firstArgAsInt(args, 1, /*require_positive=*/true));
+    return 0;
+}</code></pre>
+				</div>
+				<p>
+					Every frame checks <code>flowPending()</code> after running a child node and returns
+					early if a signal is live. The loop body's epilogue is where a multi-level
+					<code>break N</code> actually gets consumed one level at a time as the unwind passes
+					through each enclosing loop:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/executor.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/executor.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>LoopFlowAction Executor::dispatchLoopFlow() {
+    switch (flow_.kind) {
+    case FlowSignal::Kind::Continue:
+        if (--flow_.count &gt; 0) return LoopFlowAction::Propagate;
+        clearFlow();
+        return LoopFlowAction::NextIter;
+    case FlowSignal::Kind::Break:
+        if (--flow_.count &gt; 0) return LoopFlowAction::Propagate;
+        clearFlow();
+        return LoopFlowAction::ExitLoop;
+    case FlowSignal::Kind::Return:
+    case FlowSignal::Kind::Exit:
+        return LoopFlowAction::Propagate;
+    case FlowSignal::Kind::None:
+    default:
+        return LoopFlowAction::Normal;
+    }
+}</code></pre>
+				</div>
+				<p>
+					<code>break 3</code> decrements the count once per enclosing loop it passes through and
+					only actually exits the loop whose turn it is; every loop above it sees
+					<code>Propagate</code> and keeps unwinding. It reads like manual exception handling
+					because that's exactly what it is, done
+					explicitly so control flow stays visible in the executor's own logic instead of hiding
+					in a C++ unwind.
 				</p>
 
 				<h2>POSIX ↔ Win32 path translation</h2>
@@ -101,20 +248,100 @@
 					to <code>C:\Users\...</code>, <code>/tmp</code> maps to <code>%TEMP%</code>,
 					<code>/dev/null</code> maps to <code>NUL</code>, and so on, with both directions being
 					idempotent so re-translating an already-native path is a no-op:
-					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.h#L58-L106" target="_blank" rel="noopener">src/pathconv.h#L58-L106</a>.
-					When wbsh spawns a native argument, it only translates the ones that look like they need
-					it — starts with <code>/</code>, isn't a flag, isn't a URL, isn't a bare
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/pathconv.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>PathConv::PathConv() {
+    for (char c = 'a'; c &lt;= 'z'; ++c) {
+        Mount m;
+        m.posix = std::string("/") + c;
+        std::string w; w += static_cast&lt;char&gt;(std::toupper(static_cast&lt;unsigned char&gt;(c)));
+        w += ":";
+        m.win32 = std::move(w);
+        m.exact = false;
+        mounts_.push_back(std::move(m));
+    }
+
+    std::string tmp = getTempDir();
+    if (!tmp.empty()) mounts_.push_back({ "/tmp", tmp, false });
+
+    mounts_.push_back({ "/dev/null", "NUL", true });
+    mounts_.push_back({ "/dev/tty",   "CON",     true });
+    mounts_.push_back({ "/dev/stdin", "CONIN$",  true });
+    mounts_.push_back({ "/dev/stdout","CONOUT$", true });
+    mounts_.push_back({ "/dev/stderr","CONOUT$", true });
+}</code></pre>
+				</div>
+				<p>
+					Translation itself is a longest-prefix match over that table — <code>/c</code> and a
+					hypothetical <code>/c/temp</code> mount would both match <code>/c/temp/x</code>, and the
+					longer one wins:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/pathconv.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>bool PathConv::applyMount(const std::string&amp; p, std::string&amp; out) const {
+    const Mount* best = nullptr;
+    std::size_t best_len = 0;
+    for (const auto&amp; m : mounts_) {
+        if (m.exact) {
+            if (p == m.posix) { best = &amp;m; best_len = m.posix.size(); break; }
+            continue;
+        }
+        if (p.size() &lt; m.posix.size()) continue;
+        if (p.compare(0, m.posix.size(), m.posix) != 0) continue;
+        if (p.size() &gt; m.posix.size() &amp;&amp; p[m.posix.size()] != '/') continue;
+        if (m.posix.size() &gt; best_len) { best = &amp;m; best_len = m.posix.size(); }
+    }
+    if (!best) return false;
+    // … stitch best-&gt;win32 with the remaining tail, flipping slashes …
+    return true;
+}</code></pre>
+				</div>
+				<p>
+					When wbsh spawns a native argument, it only translates the ones that look like they
+					need it — starts with <code>/</code>, isn't a flag, isn't a URL, isn't a bare
 					<code>/</code> — and for <code>--opt=PATH</code>-style arguments it translates just the
 					value side:
-					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp#L346-L379" target="_blank" rel="noopener">src/pathconv.cpp#L346-L379</a>.
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/pathconv.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>bool PathConv::argLooksTranslatable(const std::string&amp; arg) const {
+    if (arg.empty()) return false;
+    if (arg == "/") return false;
+    if (arg.find("://") != std::string::npos) return false;
+    if (arg[0] == '-') return false;
+    if (arg[0] != '/') return false;
+    // Single-letter `/x` is almost always a Win32-style switch (`cmd /c`,
+    // `cmd /k`, `where /q`, etc.). Require a deeper path before we
+    // translate, OR an exact match against a known mount.
+    if (arg.size() &lt; 3) return false;
+    if (arg.size() &gt;= 4 &amp;&amp; arg[2] == '/') return true;
+    // …
+    std::string out;
+    return applyMount(arg, out);
+}
+
+std::string PathConv::translateArg(const std::string&amp; arg) const {
+    if (argLooksTranslatable(arg)) return toWin32(arg);
+    if (!arg.empty() &amp;&amp; arg[0] == '-') {
+        std::size_t eq = arg.find('=');
+        if (eq != std::string::npos &amp;&amp; eq + 1 &lt; arg.size()) {
+            std::string val = arg.substr(eq + 1);
+            if (argLooksTranslatable(val)) {
+                return arg.substr(0, eq + 1) + toWin32(val);
+            }
+        }
+    }
+    return arg;
+}</code></pre>
+				</div>
 				<p>
-					Two subtler problems live in the same file. First, MSVC's
+					Two subtler problems live in the same area of the codebase. First, MSVC's
 					<code>std::filesystem::path(std::string)</code> interprets narrow strings through the
 					active codepage, not UTF-8, so a name like "Tomáš" silently mangles into mojibake on
 					disk unless every path is round-tripped through a wide string first — the reason
 					<code>utf8ToPath</code> / <code>pathToUtf8</code> exist at all
-					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.h#L1-L20" target="_blank" rel="noopener">src/pathconv.h#L1-L20</a>).
+					(<code>src/pathconv.h</code>'s file-level comment documents the mechanism in full).
 					Second, when wbsh hands <code>HOME</code> to a MinGW-built child (Git for Windows and
 					friends), that child's ANSI <code>getenv</code> reads the environment block through the
 					same active codepage and can mangle non-ASCII usernames the same way — so
@@ -122,8 +349,33 @@
 					(<code>C:\Users\TOMA~1</code>), which is pure ASCII and survives any transcoding,
 					falling back to the long form only when the path is already ASCII or the volume has
 					8.3 name generation disabled:
-					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp#L248-L291" target="_blank" rel="noopener">src/pathconv.cpp#L248-L291</a>.
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/pathconv.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>std::string PathConv::toWin32Short(const std::string&amp; p) const {
+    std::string longw = toWin32(p);
+#ifdef _WIN32
+    if (longw.empty()) return longw;
+    bool has_non_ascii = false;
+    for (unsigned char c : longw) {
+        if (c &gt;= 0x80) { has_non_ascii = true; break; }
+    }
+    if (!has_non_ascii) return longw;
+
+    // … convert UTF-8 → wide, call GetShortPathNameW, convert back to UTF-8 …
+
+    // If 8.3 generation is off on this volume, GetShortPathName returns
+    // the long form unchanged — still non-ASCII, still mangleable.
+    // Fall back to the long form (caller is no worse off than before).
+    for (unsigned char c : out) {
+        if (c &gt;= 0x80) return longw;
+    }
+    return out;
+#else
+    return longw;
+#endif
+}</code></pre>
+				</div>
 
 				<h2>Line editing: ghost-text prediction that knows what failed</h2>
 				<p>
@@ -133,14 +385,57 @@
 					newest-first for the first entry that starts with the typed prefix — but skips any entry
 					whose last execution exited non-zero, via a parallel exit-status vector, so a typo you
 					already made once never gets re-suggested:
-					<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lineedit.h#L61-L84" target="_blank" rel="noopener">src/lineedit.h#L61-L84</a>.
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/lineedit.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lineedit.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>std::string findInlinePrediction(const std::vector&lt;std::string&gt;&amp; history,
+                                 const std::vector&lt;int&gt;&amp; history_status,
+                                 const std::string&amp; prefix) {
+    if (prefix.empty()) return {};
+    for (std::size_t i = history.size(); i &gt; 0; --i) {
+        const std::size_t idx = i - 1;
+        if (idx &lt; history_status.size() &amp;&amp; history_status[idx] != 0) continue;
+        const std::string&amp; entry = history[idx];
+        if (entry.size() &gt; prefix.size()
+            &amp;&amp; entry.compare(0, prefix.size(), prefix) == 0) {
+            return entry.substr(prefix.size());
+        }
+    }
+    return {};
+}</code></pre>
+				</div>
 				<p>
 					Reverse-incremental search (<code>Ctrl-R</code>) is a small pure function over the same
 					history vector — scan backward or forward from a start index for the first entry
 					containing the query as a substring — which keeps the search logic testable independent
-					of the raw-mode console loop that drives it
-					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lineedit.h#L40-L56" target="_blank" rel="noopener">src/lineedit.h#L40-L56</a>).
+					of the raw-mode console loop that drives it:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/lineedit.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lineedit.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>std::size_t findReverseSearchMatch(const std::vector&lt;std::string&gt;&amp; history,
+                                   const std::string&amp; query,
+                                   std::size_t start_index,
+                                   bool forward) {
+    if (query.empty() || history.empty()) return history.size();
+    std::size_t start = start_index &lt; history.size()
+        ? start_index : history.size() - 1;
+    if (forward) {
+        for (std::size_t i = start; i &lt; history.size(); ++i) {
+            if (history[i].find(query) != std::string::npos) return i;
+        }
+        return history.size();
+    }
+    // Backward (toward older entries). i is unsigned, so guard the
+    // underflow by walking until i hits 0 and then breaking after the
+    // final compare.
+    for (std::size_t i = start;; --i) {
+        if (history[i].find(query) != std::string::npos) return i;
+        if (i == 0) break;
+    }
+    return history.size();
+}</code></pre>
+				</div>
+				<p>
 					On a real console the editor runs a raw-mode loop with cursor movement, kill ring, and
 					Unicode-aware redraw; on piped stdin (scripts, tests) it transparently falls back to a
 					line-buffered read loop, so the same binary drives both an interactive TTY and
@@ -152,14 +447,47 @@
 					Rather than drawing its own terminal, wbsh enables
 					<code>ENABLE_VIRTUAL_TERMINAL_PROCESSING</code> on the console's output mode so ANSI
 					escape sequences render natively in conhost, Windows Terminal, VS Code, and JetBrains
-					terminals, and only falls back to plain output if that mode can't be set
-					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/repl.cpp#L463-L466" target="_blank" rel="noopener">src/repl.cpp#L463-L466</a>).
-					It also paints its own console window to match: <code>DwmSetWindowAttribute</code> flips
-					on immersive dark mode and tints the caption and border to the shell's palette on Win11,
-					falling back to the pre-1903 dark-mode constant and silently ignoring the caption/border
-					calls on older systems that don't support them
-					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/src/repl.cpp#L84-L99" target="_blank" rel="noopener">src/repl.cpp#L84-L99</a>).
+					terminals, and only falls back to plain output if that mode can't be set:
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/repl.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/repl.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>// The captured "good" modes are re-applied before every prompt:
+// externals (pagers, vim) corrupt console state and don't restore it.
+s.h_out = GetStdHandle(STD_OUTPUT_HANDLE);
+s.h_in  = GetStdHandle(STD_INPUT_HANDLE);
+if (s.h_out != INVALID_HANDLE_VALUE &amp;&amp; GetConsoleMode(s.h_out, &amp;s.good_out_mode)) {
+    s.good_out_mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    s.good_out_mode |= ENABLE_PROCESSED_OUTPUT;
+    s.good_out_mode |= ENABLE_WRAP_AT_EOL_OUTPUT;
+    s.color_ok = SetConsoleMode(s.h_out, s.good_out_mode) != 0;
+}</code></pre>
+				</div>
+				<p>
+					It also paints its own console window to match: <code>DwmSetWindowAttribute</code>
+					flips on immersive dark mode and tints the caption and border to the shell's palette on
+					Win11, falling back to the pre-1903 dark-mode constant and silently ignoring the
+					caption/border calls on older systems that don't support them:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>src/repl.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/repl.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>static void setupConsoleWindow() {
+    SetConsoleTitleW(L"wbsh");
+    HWND hwnd = GetConsoleWindow();
+    if (!hwnd) return;
+    BOOL dark = TRUE;
+    if (FAILED(DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                                     &amp;dark, sizeof(dark)))) {
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD,
+                              &amp;dark, sizeof(dark));
+    }
+    // Win11-only: paint the caption + frame to match the shell's dark
+    // theme. Older systems return E_INVALIDARG, which we silently ignore.
+    COLORREF caption = RGB(0x14, 0x14, 0x18);
+    DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &amp;caption, sizeof(caption));
+    COLORREF border = RGB(0x33, 0x33, 0x3a);
+    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &amp;border, sizeof(border));
+}</code></pre>
+				</div>
 
 				<h2>Bundled coreutils, one binary</h2>
 				<p>
@@ -182,12 +510,39 @@
 				<h2>Testing: the suite is written in wbsh, run by wbsh</h2>
 				<p>
 					The 44-plus-script test suite isn't driven by an external test runner — it's a wbsh
-					script (<a href="https://github.com/tomas-trachta/wbsh/blob/main/tests/run-all.sh" target="_blank" rel="noopener">tests/run-all.sh</a>)
-					that <code>wbsh -r</code> executes, which in turn runs every other <code>.sh</code> file
-					in the directory through the same shell. It checks exit codes against expectations and,
-					in golden mode, diffs combined stdout+stderr against recorded fixtures under
-					<code>tests/expected/</code>
-					(<a href="https://github.com/tomas-trachta/wbsh/blob/main/tests/run-all.sh#L1-L22" target="_blank" rel="noopener">tests/run-all.sh#L1-L22</a>),
+					script that <code>wbsh -r</code> executes, which in turn runs every other <code>.sh</code>
+					file in the directory through the same shell. It checks exit codes against expectations
+					and, in golden mode, diffs combined stdout+stderr against recorded fixtures under
+					<code>tests/expected/</code>:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>tests/run-all.sh</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/tests/run-all.sh" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>run_one() {
+    local script=$1
+    local out=$TMP_DIR/${script}.out
+
+    "$WBSH" -r "$script" &gt; "$out" 2&gt;&amp;1
+    local rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+        printf "  ok       %s\n" "$script"
+    else
+        printf "  FAIL rc  %s (got %d, want 0)\n" "$script" "$rc"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+
+    if [ "${WBSH_GOLDEN:-0}" = "1" ] &amp;&amp; ! is_in_list "$script" "$NO_GOLDEN"; then
+        if diff -u "$GOLDEN_DIR/${script}.out" "$out" &gt; "$TMP_DIR/${script}.diff" 2&gt;&amp;1; then
+            printf "           golden ok\n"
+        else
+            printf "  FAIL out %s -- diff in %s/${script}.diff\n" "$script" "$TMP_DIR"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    fi
+}</code></pre>
+				</div>
+				<p>
 					with a small deny-list of scripts excluded from golden comparison because their output
 					is inherently machine-specific (dates, hostnames, native command output). Every run of
 					the suite is itself exercising the parser, the expander, functions, control flow, and

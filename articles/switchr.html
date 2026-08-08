@@ -32,30 +32,86 @@
 					GPU-composited overlay with live thumbnails on a hotkey. It's built in C++17 directly on
 					Direct3D 11, DirectComposition, and Direct2D — no game engine, no UI toolkit — plus a set
 					of Win32/DWM mechanisms (WinEvent hooks, live thumbnails, cloak checks) that most Alt-Tab
-					clones skip. Here's how the pieces fit together, with links straight to the source.
+					clones skip. Here's how the pieces fit together, with real snippets from the source
+					(trimmed for length; <code>// …</code> marks an elision).
 				</p>
 
 				<h2>The rendering stack: D3D11 device behind a composition swap chain</h2>
 				<p>
 					The overlay window doesn't own a normal HWND-backed swap chain — it's composited.
 					<code>Renderer</code> creates a D3D11 device with <code>BGRA_SUPPORT</code>, wraps it in a
-					<code>DCompositionDevice</code>, and creates a swap chain
-					<em>for composition</em> rather than for the window directly, attaching it to a
-					<code>DCompositionVisual</code> that's the actual thing DWM composites to screen:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp#L29-L34" target="_blank" rel="noopener">Switchr/src/Renderer.cpp#L29-L34</a>
-					and
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp#L68-L81" target="_blank" rel="noopener">L68-L81</a>.
-					Direct2D then gets a device context created directly on top of the same DXGI device, so
-					D2D draws land straight into the swap chain's back buffer with no extra copy
-					(<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp#L83-L90" target="_blank" rel="noopener">L83-L90</a>).
+					<code>DCompositionDevice</code>, and creates a swap chain <em>for composition</em> rather
+					than for the window directly, attaching it to a <code>DCompositionVisual</code> that's the
+					actual thing DWM composites to screen:
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Renderer.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>void Renderer::CreateDeviceResources() {
+    CreateD3DDevice();
+    CreateCompositionTarget();
+    CreateD2D();
+    CreateTextAndImaging();
+}
+
+void Renderer::CreateCompositionTarget() {
+    ThrowIfFailed(DCompositionCreateDevice(dxgi_.Get(), IID_PPV_ARGS(&amp;dcomp_)),
+                  "DCompositionCreateDevice");
+    ThrowIfFailed(dcomp_-&gt;CreateTargetForHwnd(hwnd_, TRUE, &amp;dcompTarget_),
+                  "CreateTargetForHwnd");
+    ThrowIfFailed(dcomp_-&gt;CreateVisual(&amp;dcompVisual_), "DComp CreateVisual");
+    ThrowIfFailed(dcompTarget_-&gt;SetRoot(dcompVisual_.Get()), "DComp SetRoot");
+
+    // IDCompositionVisual has no SetOpacity — opacity (static and animated)
+    // goes through an effect group attached to the visual.
+    ThrowIfFailed(dcomp_-&gt;CreateEffectGroup(&amp;opacityEffect_), "DComp CreateEffectGroup");
+    opacityEffect_-&gt;SetOpacity(1.0f);
+    ThrowIfFailed(dcompVisual_-&gt;SetEffect(opacityEffect_.Get()), "Visual SetEffect");
+}</code></pre>
+				</div>
+				<p>
+					Direct2D then gets a device context created directly on top of the same DXGI device, so
+					D2D draws land straight into the swap chain's back buffer with no extra copy:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Renderer.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>void Renderer::CreateD2D() {
+    ThrowIfFailed(D2D1CreateFactory(
+        D2D1_FACTORY_TYPE_SINGLE_THREADED, IID_PPV_ARGS(&amp;d2dFactory_)),
+        "D2D1CreateFactory");
+    ThrowIfFailed(d2dFactory_-&gt;CreateDevice(dxgi_.Get(), &amp;d2dDevice_), "D2D CreateDevice");
+    ThrowIfFailed(d2dDevice_-&gt;CreateDeviceContext(
+        D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &amp;d2dCtx_), "D2D CreateDeviceContext");
+}</code></pre>
+				</div>
 				<p>
 					Fade in/out isn't driven by a UI-thread timer. <code>IDCompositionVisual</code> has no
 					opacity property of its own, so an effect group is attached to carry it, and
 					<code>AnimateOpacity()</code> hands DComp a linear ramp via
 					<code>IDCompositionAnimation::AddCubic</code> — once committed, the compositor advances
 					the fade on its own thread, independent of whatever the app thread is doing:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp#L188-L205" target="_blank" rel="noopener">Switchr/src/Renderer.cpp#L188-L205</a>.
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Renderer.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>void Renderer::AnimateOpacity(float from, float to, double seconds) {
+    if (!opacityEffect_ || !dcomp_) return;
+
+    ComPtr&lt;IDCompositionAnimation&gt; anim;
+    if (FAILED(dcomp_-&gt;CreateAnimation(&amp;anim)) || !anim) {
+        opacityEffect_-&gt;SetOpacity(to);
+        dcomp_-&gt;Commit();
+        return;
+    }
+
+    // Linear ramp: f(t) = from + ((to - from) / seconds) * t, ending at `seconds`.
+    double slope = (seconds &gt; 0.0) ? ((to - from) / seconds) : 0.0;
+    anim-&gt;AddCubic(0.0, from, (float)slope, 0.0f, 0.0f);
+    anim-&gt;End(seconds, to);
+
+    opacityEffect_-&gt;SetOpacity(anim.Get());
+    dcomp_-&gt;Commit();
+}</code></pre>
+				</div>
+				<p>
 					That's what keeps the overlay's fade smooth even if the app thread is momentarily busy
 					laying out tiles or rescoring a search.
 				</p>
@@ -64,14 +120,46 @@
 				<p>
 					The tile grid doesn't grab bitmaps of other windows — it registers each visible window as
 					a DWM thumbnail source with <code>DwmRegisterThumbnail</code> and lets the compositor
-					stream the live content directly into a destination rectangle on the overlay:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp#L852-L866" target="_blank" rel="noopener">Switchr/src/Overlay.cpp#L852-L866</a>.
-					Because DWM doesn't clip a thumbnail to the destination window's bounds, a tile that's
-					only half-scrolled into view would otherwise bleed over the search box — so before every
+					stream the live content directly into a destination rectangle on the overlay. Because DWM
+					doesn't clip a thumbnail to the destination window's bounds, a tile that's only
+					half-scrolled into view would otherwise bleed over the search box — so before every
 					layout pass Switchr explicitly hides any thumbnail whose tile isn't fully inside the
 					visible viewport, rather than relying on clipping that doesn't exist:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp#L868-L894" target="_blank" rel="noopener">L868-L894</a>.
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Overlay.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>static void RegisterThumbnails(Overlay::State&amp; s, HWND overlayHwnd) {
+    UnregisterThumbnails(s);
+    if (s.mode != Mode::Tiles) return;
+
+    int n = (int)s.filtered.size();
+    s.thumbs.assign(n, nullptr);
+    for (int i = 0; i &lt; n; ++i) {
+        HWND src = s.all[s.filtered[i]].hwnd;
+        HTHUMBNAIL th = nullptr;
+        if (FAILED(DwmRegisterThumbnail(overlayHwnd, src, &amp;th)) || !th) continue;
+        s.thumbs[i] = th;
+    }
+    UpdateThumbnailLayout(s);
+}
+
+// Thumbs whose tile is not fully inside the viewport are hidden — DWM doesn't
+// clip destination rects, so a half-scrolled thumb would overlap the search box.
+static void UpdateThumbnailLayout(Overlay::State&amp; s) {
+    for (int i = 0; i &lt; n; ++i) {
+        // …
+        bool fullyVisible = ((float)shifted.top    &gt;= s.viewportTop) &amp;&amp;
+                            ((float)shifted.bottom &lt;= s.viewportBot);
+
+        DWM_THUMBNAIL_PROPERTIES p{};
+        p.dwFlags = DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE |
+                    DWM_TNP_OPACITY | DWM_TNP_SOURCECLIENTAREAONLY;
+        p.rcDestination = shifted;
+        p.fVisible      = fullyVisible ? TRUE : FALSE;
+        DwmUpdateThumbnailProperties(s.thumbs[i], &amp;p);
+    }
+}</code></pre>
+				</div>
 
 				<h2>MRU ordering from one event hook, not polling</h2>
 				<p>
@@ -79,11 +167,42 @@
 					<code>EVENT_SYSTEM_FOREGROUND</code> — every time a top-level window becomes the
 					foreground window, it gets stamped with the next value of a monotonically increasing
 					counter, and the tile grid just sorts by that stamp:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/MruTracker.cpp#L8-L19" target="_blank" rel="noopener">Switchr/src/MruTracker.cpp#L8-L19</a>.
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/MruTracker.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/MruTracker.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>HWINEVENTHOOK                       g_hook    = nullptr;
+uint64_t                            g_counter = 0;
+std::unordered_map&lt;HWND, uint64_t&gt;  g_ranks;
+
+void CALLBACK FgHookProc(HWINEVENTHOOK, DWORD, HWND hwnd,
+                         LONG idObject, LONG idChild, DWORD, DWORD) {
+    if (!hwnd) return;
+    if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
+    if (GetAncestor(hwnd, GA_ROOT) != hwnd) return;
+
+    g_ranks[hwnd] = ++g_counter;
+}</code></pre>
+				</div>
+				<p>
 					On startup there's no history yet, so ranks are seeded once from the current z-order —
 					<code>EnumWindows</code> already yields windows topmost-first, so the front-most window
 					just gets the highest initial rank:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/MruTracker.cpp#L26-L36" target="_blank" rel="noopener">L26-L36</a>.
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/MruTracker.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/MruTracker.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>// EnumWindows yields top-to-bottom z-order; the topmost window is the most
+// recently active one, so it gets the largest rank.
+void SeedRanksFromZOrder() {
+    std::vector&lt;HWND&gt; hwnds;
+    hwnds.reserve(256);
+    EnumWindows(CollectHwndProc, reinterpret_cast&lt;LPARAM&gt;(&amp;hwnds));
+
+    g_counter = static_cast&lt;uint64_t&gt;(hwnds.size()) + 1;
+    uint64_t rank = g_counter;
+    for (HWND h : hwnds) g_ranks[h] = rank--;
+}</code></pre>
+				</div>
+				<p>
 					No polling, no periodic rescan — the whole tracker is an event callback and a hash map.
 				</p>
 
@@ -94,19 +213,74 @@
 					qualifies if it's the last active visible popup of its own owner chain, walked via
 					<code>GetAncestor(GA_ROOTOWNER)</code> and <code>GetLastActivePopup</code> — which is what
 					correctly excludes owned dialogs and tool palettes while still surfacing the right window
-					for apps that keep a hidden main frame behind a visible child:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/WindowList.cpp#L25-L51" target="_blank" rel="noopener">Switchr/src/WindowList.cpp#L25-L51</a>.
-					On top of that it filters <code>WS_EX_TOOLWINDOW</code> and windows DWM reports as
-					<code>DWMWA_CLOAKED</code> — the flag UWP apps and windows parked on an inactive virtual
-					desktop carry while technically still "visible" by every other Win32 test.
+					for apps that keep a hidden main frame behind a visible child. On top of that it filters
+					<code>WS_EX_TOOLWINDOW</code> and windows DWM reports as <code>DWMWA_CLOAKED</code> — the
+					flag UWP apps and windows parked on an inactive virtual desktop carry while technically
+					still "visible" by every other Win32 test:
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/WindowList.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/WindowList.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>// The classic alt-tab ownership rule: a window qualifies only if it is the
+// last active visible popup of its own owner chain.
+bool IsLastActivePopupOfOwnerChain(HWND hwnd) {
+    HWND walk = nullptr;
+    HWND tryW = GetAncestor(hwnd, GA_ROOTOWNER);
+    while (tryW != walk) {
+        walk = tryW;
+        tryW = GetLastActivePopup(walk);
+        if (IsWindowVisible(tryW)) break;
+    }
+    return walk == hwnd;
+}
+
+bool IsCloaked(HWND hwnd) {
+    BOOL cloaked = FALSE;
+    return SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &amp;cloaked, sizeof(cloaked)))
+        &amp;&amp; cloaked;
+}
+
+bool IsAltTabWindow(HWND hwnd) {
+    if (!IsWindowVisible(hwnd)) return false;
+    if (!IsLastActivePopupOfOwnerChain(hwnd)) return false;
+    if (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) &amp; WS_EX_TOOLWINDOW) return false;
+    if (IsCloaked(hwnd)) return false;
+    if (GetWindowTextLengthW(hwnd) == 0) return false;
+    return true;
+}</code></pre>
+				</div>
 				<p>
 					Activating the chosen window goes through the standard workaround for
 					<code>SetForegroundWindow</code>'s focus-stealing restriction: temporarily
 					<code>AttachThreadInput</code> to whatever thread currently owns the foreground window,
 					so Windows treats the activation as coming from the already-focused thread instead of an
 					unrelated background process, then detach immediately after:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/WindowList.cpp#L118-L139" target="_blank" rel="noopener">Switchr/src/WindowList.cpp#L118-L139</a>.
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/WindowList.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/WindowList.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>void ForceForeground(HWND target) {
+    if (IsHungAppWindow(target)) {
+        if (IsIconic(target)) ShowWindowAsync(target, SW_RESTORE);
+        return;
+    }
+
+    DWORD curThread = GetCurrentThreadId();
+    HWND  fgWnd     = GetForegroundWindow();
+    DWORD fgThread  = fgWnd ? GetWindowThreadProcessId(fgWnd, nullptr) : 0;
+
+    bool attached = false;
+    if (fgThread &amp;&amp; fgThread != curThread &amp;&amp; !IsHungAppWindow(fgWnd)) {
+        attached = AttachThreadInput(curThread, fgThread, TRUE) != 0;
+    }
+
+    if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
+    BringWindowToTop(target);
+    SetForegroundWindow(target);
+    SetFocus(target);
+
+    if (attached) AttachThreadInput(curThread, fgThread, FALSE);
+}</code></pre>
+				</div>
+				<p>
 					A hung target window (<code>IsHungAppWindow</code>) skips all of that and just gets an
 					async restore, since attaching thread input to a window that isn't pumping messages
 					would hang the switcher too.
@@ -116,49 +290,179 @@
 				<p>
 					Typing splits the query on whitespace into lowercase terms, and every term must appear in
 					either the window title or the exe name for a window to survive at all — a genuine AND,
-					not a fuzzy edit-distance match:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp#L93-L115" target="_blank" rel="noopener">Switchr/src/Overlay.cpp#L93-L115</a>.
-					Within that, the score rewards a term matching at position 0 heavily (a prefix match on
-					the title outscores a mid-string match by more than 3:1), gives a smaller bonus for
-					matching the exe name, and adds a mild bias toward shorter titles so that, all else
-					equal, "Notepad" ranks above "Notepad — some/long/path/deep/in/a/tree.txt". Results are
-					then sorted by score first and MRU rank as the tiebreaker, so among equally good text
-					matches the window you touched most recently still wins:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp#L735-L745" target="_blank" rel="noopener">L735-L745</a>.
+					not a fuzzy edit-distance match. The score rewards a term matching at position 0 heavily
+					(a prefix match on the title outscores a mid-string match by more than 3:1), gives a
+					smaller bonus for matching the exe name, and adds a mild bias toward shorter titles so
+					that, all else equal, "Notepad" ranks above "Notepad — some/long/path/deep/in/a/tree.txt":
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Overlay.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>// -1 = no match.
+int ScoreEntry(const WindowEntry&amp; w, const std::vector&lt;std::wstring&gt;&amp; terms) {
+    if (terms.empty()) return 0;
+
+    std::wstring title = ToLower(w.title);
+    std::wstring exe   = ToLower(w.exe);
+
+    int score = 0;
+    for (const auto&amp; t : terms) {
+        size_t titlePos = title.find(t);
+        size_t exePos   = exe.find(t);
+        if (titlePos == std::wstring::npos &amp;&amp; exePos == std::wstring::npos) return -1;
+
+        int termScore = 0;
+        if (titlePos == 0) termScore += 100;
+        else if (titlePos != std::wstring::npos) termScore += 60 - std::min&lt;int&gt;(50, (int)titlePos);
+        if (exePos == 0) termScore += 30;
+        else if (exePos != std::wstring::npos) termScore += 15;
+        score += termScore;
+    }
+
+    score += std::max(0, 40 - (int)title.size() / 4);
+    return score;
+}</code></pre>
+				</div>
+				<p>
+					Results are then sorted by score first and MRU rank as the tiebreaker, so among equally
+					good text matches the window you touched most recently still wins:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Overlay.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>struct Scored { int idx; int score; uint64_t mru; };
+std::vector&lt;Scored&gt; hits;
+for (int i = 0; i &lt; (int)s.all.size(); ++i) {
+    int sc = ScoreEntry(s.all[i], terms);
+    if (sc &gt;= 0) hits.push_back({ i, sc, Mru::Rank(s.all[i].hwnd) });
+}
+
+std::sort(hits.begin(), hits.end(),
+    [](const Scored&amp; a, const Scored&amp; b) {
+        if (a.score != b.score) return a.score &gt; b.score;
+        return a.mru &gt; b.mru;
+    });</code></pre>
+				</div>
 
 				<h2>Namespaces: hiding windows without the taskbar flicker</h2>
 				<p>
 					Switching a namespace means showing one set of windows and hiding another, batched
 					through <code>BeginDeferWindowPos</code>/<code>EndDeferWindowPos</code> so the whole
 					transition applies as one atomic update instead of a visible flash as windows disappear
-					one by one:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp#L120-L136" target="_blank" rel="noopener">Switchr/src/Namespaces.cpp#L120-L136</a>.
-					Before that, every window involved gets <code>DWMWA_TRANSITIONS_FORCEDISABLED</code> set
-					so DWM's own show/hide animation doesn't fight the deferred move, and it's restored right
-					after — otherwise a whole workspace of windows animating in and out at once looks like
-					the desktop falling apart rather than a clean switch:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp#L102-L118" target="_blank" rel="noopener">L102-L118</a>.
+					one by one. Before that, every window involved gets
+					<code>DWMWA_TRANSITIONS_FORCEDISABLED</code> set so DWM's own show/hide animation doesn't
+					fight the deferred move, and it's restored right after — otherwise a whole workspace of
+					windows animating in and out at once looks like the desktop falling apart rather than a
+					clean switch:
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Namespaces.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>void SuppressTransitions(HWND h) {
+    if (!g_noTrans.insert(h).second) return;
+    BOOL on = TRUE;
+    DwmSetWindowAttribute(h, DWMWA_TRANSITIONS_FORCEDISABLED, &amp;on, sizeof(on));
+}
+
+void RestoreTransitions() {
+    BOOL off = FALSE;
+    for (HWND h : g_noTrans) {
+        if (IsWindow(h))
+            DwmSetWindowAttribute(h, DWMWA_TRANSITIONS_FORCEDISABLED, &amp;off, sizeof(off));
+    }
+    g_noTrans.clear();
+}
+
+void ApplyVisibility(const std::vector&lt;HWND&gt;&amp; show, const std::vector&lt;HWND&gt;&amp; hide) {
+    for (HWND h : show) SuppressTransitions(h);
+    for (HWND h : hide) SuppressTransitions(h);
+
+    constexpr UINT kCommon = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                             SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS;
+    HDWP hdwp = BeginDeferWindowPos((int)(show.size() + hide.size()));
+    for (HWND h : show) { if (hdwp) hdwp = DeferWindowPos(hdwp, h, nullptr, 0, 0, 0, 0, kCommon | SWP_SHOWWINDOW); }
+    for (HWND h : hide) { if (hdwp) hdwp = DeferWindowPos(hdwp, h, nullptr, 0, 0, 0, 0, kCommon | SWP_HIDEWINDOW); }
+
+    if (hdwp) EndDeferWindowPos(hdwp);
+    else {
+        for (HWND h : show) ShowWindowAsync(h, SW_SHOWNA);
+        for (HWND h : hide) ShowWindowAsync(h, SW_HIDE);
+    }
+}</code></pre>
+				</div>
 				<p>
 					New windows are auto-assigned to the active namespace via two more WinEvent hooks —
 					<code>EVENT_OBJECT_SHOW</code> and <code>EVENT_OBJECT_DESTROY</code> — rather than any
 					polling loop:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp#L418-L427" target="_blank" rel="noopener">Switchr/src/Namespaces.cpp#L418-L427</a>.
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Namespaces.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>g_owner = hotkeyOwner;
+g_showHook = SetWinEventHook(
+    EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW,
+    nullptr, ShowHookProc, 0, 0,
+    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+g_destroyHook = SetWinEventHook(
+    EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY,
+    nullptr, DestroyHookProc, 0, 0,
+    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);</code></pre>
+				</div>
+				<p>
 					"Load and launch missing apps" (<code>Ctrl+Shift+L</code>) has to solve a timing problem:
 					the process it just launched doesn't have a window yet, so its eventual window can't be
 					assigned to a namespace synchronously. Instead the launch records a
 					<code>PendingAssign</code> — expected exe name, target namespace, timestamp — with a
 					two-minute TTL, and the next <code>EVENT_OBJECT_SHOW</code> for a matching exe consumes
 					it and drops the entry if the launch never produced a window in time:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp#L173-L189" target="_blank" rel="noopener">Switchr/src/Namespaces.cpp#L173-L189</a>.
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Namespaces.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>// Apps launched by LoadApps join their saved namespace (not the active one)
+// when their window finally appears; entries expire in case a launch dies.
+struct PendingAssign {
+    std::wstring exeLower;
+    int          ns;
+    ULONGLONG    tick;
+};
+std::vector&lt;PendingAssign&gt; g_pending;
+constexpr ULONGLONG        kPendingTtlMs = 120 * 1000;
+
+void PrunePending() {
+    ULONGLONG now = GetTickCount64();
+    g_pending.erase(
+        std::remove_if(g_pending.begin(), g_pending.end(),
+            [now](const PendingAssign&amp; p) { return now - p.tick &gt; kPendingTtlMs; }),
+        g_pending.end());
+}</code></pre>
+				</div>
 				<p>
 					The saved layout itself is a deliberately simple line-based UTF-8 format under
-					<code>%APPDATA%\Switchr\namespaces.txt</code> — a <code>ns&lt;TAB&gt;name</code> line
-					starts each namespace, and following <code>app&lt;TAB&gt;path</code> lines list its apps,
-					with file order doubling as namespace order:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp#L162-L166" target="_blank" rel="noopener">Switchr/src/Namespaces.cpp#L162-L166</a>.
+					<code>%APPDATA%\Switchr\namespaces.txt</code>:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Namespaces.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>bool Ns::SaveToFile() {
+    if (g_names.empty()) return false;
+
+    std::vector&lt;std::vector&lt;std::wstring&gt;&gt; apps(g_names.size());
+    for (auto&amp; [hwnd, ns] : g_assign) {
+        if (ns &lt; 0 || ns &gt;= (int)g_names.size() || !IsWindow(hwnd)) continue;
+        std::wstring exe = GetWindowExePath(hwnd);
+        if (!exe.empty()) apps[(size_t)ns].push_back(exe);
+    }
+
+    std::string data;
+    for (size_t i = 0; i &lt; g_names.size(); ++i) {
+        data += "ns\t" + ToUtf8(g_names[i]) + "\n";
+        for (const auto&amp; a : apps[i]) data += "app\t" + ToUtf8(a) + "\n";
+    }
+
+    std::wstring path = ConfigFilePath();
+    return !path.empty() &amp;&amp; WriteFileBytes(path, data);
+}</code></pre>
+				</div>
+				<p>
+					A <code>ns&lt;TAB&gt;name</code> line starts each namespace, and the following
+					<code>app&lt;TAB&gt;path</code> lines — one per line, resolved by re-querying each managed
+					window's exe path at save time rather than caching it — list its apps, with file order
+					doubling as namespace order.
 				</p>
 
 				<h2>Per-monitor DPI, properly</h2>
@@ -168,12 +472,22 @@
 					and the overlay reads <code>GetDpiForWindow</code> both on creation and on
 					<code>WM_DPICHANGED</code>, so dragging the overlay's owning monitor setup around — or
 					just opening it on a monitor at a different scale than the last one — keeps every DIP
-					constant measurement (tile size, gaps, font size) crisp instead of blurry or
-					mis-scaled. The overlay itself always opens on the monitor of the current foreground
-					window, resolved through <code>MonitorFromWindow</code>, not wherever the mouse cursor
-					happens to be:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp#L555-L563" target="_blank" rel="noopener">Switchr/src/Overlay.cpp#L555-L563</a>.
+					constant measurement (tile size, gaps, font size) crisp instead of blurry or mis-scaled.
+					The overlay itself always opens on the monitor of the current foreground window, resolved
+					through <code>MonitorFromWindow</code>, not wherever the mouse cursor happens to be:
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Switchr/src/Overlay.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>static RECT MonitorRectForForeground() {
+    HWND fg = GetForegroundWindow();
+    HMONITOR mon = fg ? MonitorFromWindow(fg, MONITOR_DEFAULTTOPRIMARY)
+                      : MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+
+    MONITORINFO mi{ sizeof(mi) };
+    GetMonitorInfoW(mon, &amp;mi);
+    return mi.rcMonitor;
+}</code></pre>
+				</div>
 
 				<h2>No installer, no admin, one instance</h2>
 				<p>
@@ -181,9 +495,7 @@
 					which matters because a non-elevated Switchr can't <code>AttachThreadInput</code> to or
 					activate a window owned by an elevated process, a real limitation the project accepts
 					rather than asking users to run it as admin. A single named mutex enforces one running
-					instance:
-					<a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/main.cpp#L140" target="_blank" rel="noopener">Switchr/src/main.cpp#L140</a>,
-					and the whole thing ships as one exe with no install step — the tray icon and a
+					instance, and the whole thing ships as one exe with no install step — the tray icon and a
 					<code>RegisterHotKey</code> global hotkey are the entire footprint on the running system.
 				</p>
 

@@ -32,63 +32,160 @@
 					It aims at the same muscle memory as Total Commander — two panes, function-key operations,
 					instant navigation — but adds first-class FTP/FTPS/SFTP sites, a disk-usage tree rendered
 					on a virtualized canvas, and a background job queue for copies and transfers. This is a
-					walkthrough of the parts of the codebase that make those features work, with links straight
-					to the source.
+					walkthrough of the parts of the codebase that make those features work, with real snippets
+					from the source (trimmed for length; <code>// …</code> marks an elision).
 				</p>
 
 				<h2>One provider abstraction, three back ends</h2>
 				<p>
 					Every pane operation — enumerate, copy, move, rename, delete, open a stream — goes through
-					<code>IFileSystemProvider</code>. The local file system, FTP/FTPS, and SFTP each implement
-					it, so the pane view models never branch on which kind of site they're looking at.
-					<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/IFileSystemProvider.cs#L18-L65" target="_blank" rel="noopener">Business/IFileSystemProvider.cs#L18-L65</a>
+					<code>IFileSystemProvider</code>, an interface with a <code>ProviderId</code>, a
+					<code>SupportsTreeGraph</code> flag, and per-operation async methods (<code>CopyAsync</code>,
+					<code>MoveAsync</code>, <code>ImportFromAsync</code>, …) that the local file system,
+					FTP/FTPS, and SFTP each implement, so the pane view models never branch on which kind of
+					site they're looking at. <code>ProviderId</code> is what makes cross-provider routing
+					possible: local shares one identity across both panes, every remote site gets its own.
 				</p>
 				<p>
-					The interesting bit is <code>ProviderId</code>
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/IFileSystemProvider.cs#L24" target="_blank" rel="noopener">L24</a>).
-					Local shares one identity across both panes; every remote site gets its own. When the file
-					operation queue picks between a same-provider copy and a cross-provider import, it's just
-					comparing that string:
+					The local provider mostly just forwards to the existing static file-ops helpers, but
+					<code>ImportFromAsync</code> is where the abstraction earns its keep: when the source is a
+					different provider (an FTP download landing on local disk, say) there's no OS-level fast
+					path, so it falls back to a manual read/write streaming loop instead:
 				</p>
-				<pre><code>if (req.SrcProvider.ProviderId == req.DstProvider.ProviderId)
-    return await req.DstProvider.CopyAsync(req.SrcPath, req.DstPath, progress, req.Overwrite, ct);
-return await req.DstProvider.ImportFromAsync(req.SrcProvider, req.SrcPath, req.DstPath, progress, req.Overwrite, ct);</code></pre>
+				<div class="snippet">
+					<div class="snippet-file"><span>Business/LocalFileSystemProvider.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/LocalFileSystemProvider.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>public Task&lt;FileOpsComponent.OpResult&gt; ImportFromAsync(
+    IFileSystemProvider src, string srcPath, string dstPath,
+    IProgress&lt;long&gt;? bytesCopied, bool overwrite, CancellationToken ct)
+{
+    if (src is LocalFileSystemProvider)
+        return CopyAsync(srcPath, dstPath, bytesCopied, overwrite, ct);
+
+    return CrossProviderCopyAsync(src, srcPath, dstPath, bytesCopied, overwrite, ct);
+}
+
+private async Task&lt;FileOpsComponent.OpResult&gt; CrossProviderCopyAsync(
+    IFileSystemProvider src, string srcPath, string dstPath,
+    IProgress&lt;long&gt;? bytesCopied, bool overwrite, CancellationToken ct)
+{
+    try
+    {
+        if (File.Exists(dstPath) &amp;&amp; !overwrite)
+            return FileOpsComponent.OpResult.Fail($"Destination exists: {Path.GetFileName(dstPath)}");
+
+        await using var srcStream = await src.OpenReadAsync(srcPath, ct).ConfigureAwait(false);
+        await using var dstStream = await OpenWriteAsync(dstPath, overwrite, ct).ConfigureAwait(false);
+
+        var buffer = new byte[1024 * 1024];
+        long total = 0;
+        int read;
+        while ((read = await srcStream.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false)) &gt; 0)
+        {
+            await dstStream.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+            total += read;
+            bytesCopied?.Report(total);
+        }
+        return FileOpsComponent.OpResult.Ok();
+    }
+    catch (OperationCanceledException) { return FileOpsComponent.OpResult.Cancelled(); }
+    catch (Exception ex) { return FileOpsComponent.OpResult.Fail(ex.Message); }
+}</code></pre>
+				</div>
 				<p>
-					<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L105-L111" target="_blank" rel="noopener">Services/FileOperationQueue.cs#L105-L111</a>.
+					When the file operation queue picks between a same-provider copy and a cross-provider
+					import, it's just comparing that string:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Services/FileOperationQueue.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>if (req.SrcProvider.ProviderId == req.DstProvider.ProviderId)
+    return await req.DstProvider.CopyAsync(req.SrcPath, req.DstPath, progress, req.Overwrite, ct).ConfigureAwait(false);
+return await req.DstProvider.ImportFromAsync(req.SrcProvider, req.SrcPath, req.DstPath, progress, req.Overwrite, ct).ConfigureAwait(false);</code></pre>
+				</div>
+				<p>
 					That single check is what turns "drag a file from the left pane to the right pane" into
 					either a local copy, an FTP upload, or an SFTP download, with no special-casing anywhere
 					above it. Cross-provider moves reuse the same import path and only delete the source once
-					the copy has actually succeeded, so a failed delete leaves a duplicate instead of losing
-					data — <a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L119-L126" target="_blank" rel="noopener">L119-L126</a>.
+					the copy has actually succeeded, so a failed delete leaves a duplicate instead of losing data:
 				</p>
-				<p>
-					A provider also declares whether it <code>SupportsTreeGraph</code>
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/IFileSystemProvider.cs#L28-L30" target="_blank" rel="noopener">L28-L30</a>) —
-					the disk-usage view needs a full recursive snapshot, which only makes sense for local
-					drives, so the pane simply greys out the shortcut for remote sites instead of the view
-					model needing to know why.
-				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Services/FileOperationQueue.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>if (req.SrcProvider.ProviderId == req.DstProvider.ProviderId)
+    return await req.DstProvider.MoveAsync(req.SrcPath, req.DstPath, progress, req.Overwrite, ct).ConfigureAwait(false);
+
+// Cross-provider: copy first, delete source only on success.
+// If the delete fails the file is duplicated, not lost.
+var copy = await req.DstProvider.ImportFromAsync(req.SrcProvider, req.SrcPath, req.DstPath, progress, req.Overwrite, ct).ConfigureAwait(false);
+if (!copy.Success) return copy;
+
+var del = await req.SrcProvider.DeleteAsync(req.SrcPath, toRecycle: false, ct).ConfigureAwait(false);
+if (!del.Success) return FileOpsComponent.OpResult.Fail($"Copied but couldn't remove source: {del.Error}");
+return FileOpsComponent.OpResult.Ok();</code></pre>
+				</div>
 
 				<h2>FTP and SFTP: pooled connections, not one-shot clients</h2>
 				<p>
 					Remote sites are backed by <a href="https://www.nuget.org/packages/FluentFTP" target="_blank" rel="noopener">FluentFTP</a>
 					for FTP/FTPS and <a href="https://www.nuget.org/packages/SSH.NET" target="_blank" rel="noopener">SSH.NET</a>
-					for SFTP, both sitting behind a shared <code>IRemoteClient</code> interface
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/Ftp/IRemoteClient.cs" target="_blank" rel="noopener">Business/Ftp/IRemoteClient.cs</a>).
-					Opening a control connection per operation would make every remote listing feel like a
-					page load, so <code>RemoteConnectionPool</code> keeps up to <code>MaxConnectionsPerSite</code>
-					live clients per site and recycles them across operations, closing a client only after it's
-					sat idle for <code>IdleSeconds</code>:
-					<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/Ftp/RemoteConnectionPool.cs#L16-L41" target="_blank" rel="noopener">Business/Ftp/RemoteConnectionPool.cs#L16-L41</a>.
+					for SFTP, both sitting behind a shared <code>IRemoteClient</code> interface. Opening a
+					control connection per operation would make every remote listing feel like a page load, so
+					<code>RemoteConnectionPool</code> keeps a small number of live clients per site and recycles
+					them across operations:
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Business/Ftp/RemoteConnectionPool.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/Ftp/RemoteConnectionPool.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>public async Task&lt;Lease&gt; AcquireAsync(CancellationToken ct)
+{
+    await _gate.WaitAsync(ct).ConfigureAwait(false);
+    try
+    {
+        IRemoteClient? client = TakeIdle();
+        if (client == null)
+        {
+            client = CreateClient();
+            await client.ConnectAsync(ct).ConfigureAwait(false);
+        }
+        Interlocked.Increment(ref _outstanding);
+        return new Lease(this, client);
+    }
+    catch
+    {
+        _gate.Release();
+        throw;
+    }
+}</code></pre>
+				</div>
 				<p>
-					The acquire/release pattern is an <code>await using</code> lease — if an operation fails
-					with a connection-level fault, the caller marks the lease faulted so the pool disposes the
-					client instead of handing a half-dead connection to the next caller. The file operation
-					queue defaults to <code>MaxConcurrent = 3</code> precisely because a single site's pool
-					only holds 2 connections; that leaves room for a local copy to run alongside a remote
-					transfer without starving either
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L10-L14" target="_blank" rel="noopener">Services/FileOperationQueue.cs#L10-L14</a>).
+					A <code>SemaphoreSlim</code> sized to <code>MaxConnectionsPerSite</code> (2) caps
+					concurrency, and an idle client is reused before a new connection is opened. Release puts
+					the client back on an idle list guarded by its own cancellable eviction timer rather than
+					disconnecting it immediately:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Business/Ftp/RemoteConnectionPool.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/Ftp/RemoteConnectionPool.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>if (faulted || !client.IsConnected)
+{
+    await client.DisposeAsync().ConfigureAwait(false);
+    return;
+}
+
+// CTS must exist before the entry is visible to TakeIdle —
+// otherwise a parallel acquire pulls the entry while Cts is
+// null, can't cancel the pending eviction, and the eviction
+// later disposes a client the lease holder is still using.
+var entry = new IdleEntry { Client = client };
+entry.Cts = new CancellationTokenSource();
+lock (_stateLock) _idle.Add(entry);
+
+_ = Task.Delay(TimeSpan.FromSeconds(IdleSeconds), entry.Cts.Token)
+    .ContinueWith(async _ =&gt; await EvictAsync(entry).ConfigureAwait(false),
+        TaskContinuationOptions.OnlyOnRanToCompletion);</code></pre>
+				</div>
+				<p>
+					If an operation fails with a connection-level fault, the caller marks the lease faulted
+					so the pool disposes the client instead of handing a half-dead connection to the next
+					caller. The file operation queue defaults to <code>MaxConcurrent = 3</code> precisely
+					because a single site's pool only holds 2 connections; that leaves room for a local copy
+					to run alongside a remote transfer without starving either.
 				</p>
 
 				<h2>Edit-on-server, without a per-file watcher</h2>
@@ -97,33 +194,142 @@ return await req.DstProvider.ImportFromAsync(req.SrcProvider, req.SrcPath, req.D
 					editor, and uploads the result back on save. The tricky part is detecting "save" reliably:
 					most editors don't write to the target file directly, they write a sibling temp file and
 					rename it over the original, which a <code>FileSystemWatcher</code> scoped to the single
-					file would miss entirely. <code>EditOnServerWatcher</code> instead watches the containing
-					temp directory and listens for both <code>Changed</code> and <code>Renamed→target</code>
-					events, debounces 400&nbsp;ms because editors fire multiple events per save, and hashes the
-					file before each upload so an editor's on-load "changed" burst or an unmodified save
-					doesn't trigger a redundant upload:
-					<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/EditOnServerWatcher.cs#L10-L22" target="_blank" rel="noopener">Services/EditOnServerWatcher.cs#L10-L22</a>.
-					The actual upload goes back through the same <code>RemoteConnectionPool</code> as every
-					other transfer, so it isn't a special code path competing for connections.
+					file would miss entirely:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Services/EditOnServerWatcher.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/EditOnServerWatcher.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>_watcher = new FileSystemWatcher(tempDir)
+{
+    NotifyFilter = NotifyFilters.LastWrite
+                 | NotifyFilters.FileName
+                 | NotifyFilters.Size,
+    EnableRaisingEvents = true,
+};
+_watcher.Changed += OnTempChanged;
+_watcher.Renamed += OnTempRenamed;
+
+// …
+
+private void ScheduleUpload()
+{
+    _debounceCts?.Cancel();
+    _debounceCts = new CancellationTokenSource();
+    var token = _debounceCts.Token;
+    _ = Task.Delay(TimeSpan.FromMilliseconds(400), token).ContinueWith(async t =&gt;
+    {
+        if (t.IsCanceled) return;
+        await TryUploadAsync().ConfigureAwait(false);
+    }, TaskScheduler.Default);
+}</code></pre>
+				</div>
+				<p>
+					Once the debounce timer fires, the file is hashed and compared against the hash of the
+					last upload — an unmodified save or an editor's on-load <code>Changed</code> burst never
+					reaches the network:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Services/EditOnServerWatcher.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/EditOnServerWatcher.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>string newHash = HashFile(_tempFile);
+if (newHash == _lastUploadedHash) return;
+
+await using var fs = new FileStream(_tempFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite,
+    256 * 1024, useAsync: true);
+await using var lease = await RemoteConnectionPool.AcquireAsync(_site, default).ConfigureAwait(false);
+try
+{
+    await lease.Client.UploadAsync(fs, _remotePath, overwrite: true, resume: false, null, default).ConfigureAwait(false);
+}
+catch { lease.Faulted = true; throw; }
+
+_lastUploadedHash = newHash;</code></pre>
+				</div>
+				<p>
+					The upload goes back through the same <code>RemoteConnectionPool</code> as every other
+					transfer, so it isn't a special code path competing for connections.
 				</p>
 
 				<h2>Disk usage: an encrypted, incrementally-reconciled snapshot</h2>
 				<p>
 					The disk-usage tree needs a full recursive walk of a drive, which is too slow to redo on
-					every open. Josha instead persists a tree snapshot per drive letter to
-					<code>josha_data\tree.&lt;letter&gt;.daps</code>
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs#L24-L31" target="_blank" rel="noopener">Business/SnapshotComponent.cs#L24-L31</a>),
-					a flattened, indentation-delimited text format encoding each directory's name, size,
-					child counts, and last-write time, then encrypts it with Windows DPAPI scoped to the
-					current user before writing it to disk
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs#L91-L104" target="_blank" rel="noopener">L91-L104</a>,
-					<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/CryptoComponent.cs#L6-L18" target="_blank" rel="noopener">Business/CryptoComponent.cs#L6-L18</a>).
-					Each caller supplies its own entropy value so one DPAPI-protected file can't be decrypted
-					by unrelated code running as the same user, and because DPAPI keys are tied to the user
-					profile and machine, a copied snapshot file is unreadable on another PC — it just gets
-					rebuilt on the next scan instead of crashing
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs#L127-L156" target="_blank" rel="noopener">L127-L156</a>).
+					every open. Josha instead persists a tree snapshot per drive letter:
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Business/SnapshotComponent.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>private static string GetDataDir() =&gt;
+    DirectoryAnalyserComponent.WinRoot + "josha_data";
+
+private static string GetSnapshotPath(string driveLetter)
+{
+    var letter = NormalizeDriveLetter(driveLetter);
+    return Path.Combine(GetDataDir(), $"tree.{letter}.daps");
+}</code></pre>
+				</div>
+				<p>
+					That's a flattened, indentation-delimited text format encoding each directory's name, size,
+					child counts, and last-write time, then encrypted with Windows DPAPI scoped to the current
+					user before it's written to disk:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Business/SnapshotComponent.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>var sb = new StringBuilder();
+WriteNode(sb, root, 0);
+
+try
+{
+    var encrypted = CryptoComponent.ProtectString(sb.ToString(), DpapiEntropy);
+    var wrapped = PersistenceMigrator.WrapV1(encrypted);
+    FileAnalyserComponent.WriteFile(filePath, wrapped);
+}
+catch (Exception ex)
+{
+    Log.Error(LogCat, $"Failed to save {Path.GetFileName(filePath)}", ex);
+}</code></pre>
+				</div>
+				<p>
+					Each caller of the underlying <code>ProtectedData.Protect</code>/<code>Unprotect</code>
+					wrapper supplies its own entropy value so one DPAPI-protected file can't be decrypted by
+					unrelated code running as the same user, and because DPAPI keys are tied to the user
+					profile and machine, a copied snapshot file is unreadable on another PC. Loading catches
+					that failure explicitly and isolates the file instead of crashing — the snapshot just
+					gets rebuilt on the next scan:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Business/SnapshotComponent.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>string text;
+try
+{
+    text = CryptoComponent.UnprotectString(ciphertext, DpapiEntropy);
+}
+catch (Exception ex)
+{
+    Log.Error(LogCat, $"DPAPI unprotect failed for {Path.GetFileName(filePath)} (different user/machine?)", ex);
+    BackupAndIsolate(filePath, "dpapi-failed");
+    return null;
+}</code></pre>
+				</div>
+				<p>
+					A few other corruption/version cases get the same treatment when unwrapping the file's
+					envelope, before decryption is even attempted:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Business/SnapshotComponent.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>switch (unwrap.Status)
+{
+    case PersistenceMigrator.UnwrapStatus.Ok:
+        ciphertext = unwrap.Payload;
+        break;
+
+    case PersistenceMigrator.UnwrapStatus.NoEnvelope:
+        // Pre-DPAPI snapshots were AES-HWID encrypted with no envelope.
+        // Can't decrypt; isolate so the next save doesn't blow it away.
+        // Snapshot will be rebuilt on next rescan.
+        Log.Warn(LogCat, $"{Path.GetFileName(filePath)}: pre-DPAPI format; cannot read");
+        BackupAndIsolate(filePath, "legacy-format");
+        return null;
+
+    // … NewerVersion / Truncated are handled the same way, each with its own reason string
+}</code></pre>
+				</div>
 				<p>
 					Loading a snapshot is cheap, but trusting it blindly would show stale data. Reconciliation
 					makes that fast by leaning on an NTFS guarantee: a directory's own last-write time changes
@@ -132,22 +338,74 @@ return await req.DstProvider.ImportFromAsync(req.SrcProvider, req.SrcPath, req.D
 					<code>FindFirstFileEx</code> enumerations it would otherwise need and just recurses into
 					children — a single <code>GetFileAttributesEx</code> syscall stands in for a full directory
 					listing:
-					<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs#L393-L425" target="_blank" rel="noopener">Business/SnapshotComponent.cs#L393-L425</a>.
-					Only directories whose mtime actually changed fall through to the slower path that
-					diffs the real child list against the cached one by name.
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Business/SnapshotComponent.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>// Ultra-fast path: directory mtime unchanged → no add/remove/rename happened
+// at this level. NTFS bumps the parent dir's LastWriteTime on those operations,
+// so an unchanged mtime is a strict superset of the old count+name heuristic.
+// Single GetFileAttributesEx syscall; skips both FindFirstFileEx enumerations.
+// Still recurses into subdirs so deeper changes are detected at their own level.
+if (dir.LastWriteTimeUtcTicks != 0)
+{
+    if (!ScanCore.TryGetDirMtimeTicks(dir.Path, out actualTicks))
+    {
+        // … entry vanished since the snapshot was taken; clear it out
+    }
+    mtimeProbed = true;
+
+    if (actualTicks == dir.LastWriteTimeUtcTicks)
+    {
+        dir.IsScanned = true;
+        RecurseChildren(dir, ct, progress, level);
+        return;
+    }
+}</code></pre>
+				</div>
 				<p>
-					Reconciliation also parallelizes, but only at the top two levels of the tree
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs#L514-L542" target="_blank" rel="noopener">L514-L542</a>),
-					mirroring the same restraint in the initial scan: nesting <code>Parallel.ForEach</code>
-					calls saturates the .NET thread pool faster than it can grow (roughly one new thread every
-					500&nbsp;ms), which shows up as low CPU usage and a stalled UI rather than a fast scan —
-					fanning out once at the root, with ~20-30 subdirectories under a typical <code>C:\</code>,
-					already gives the scheduler plenty to chew on
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/ScanCore.cs#L73-L95" target="_blank" rel="noopener">Business/ScanCore.cs#L73-L95</a>).
-					The degree of parallelism is also capped at <code>ProcessorCount - 1</code> so the
-					dispatcher thread always keeps a core free for the loading-bar animation and UI bindings
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Business/ScanCore.cs#L97-L110" target="_blank" rel="noopener">L97-L110</a>).
+					Only directories whose mtime actually changed fall through to the slower path that diffs
+					the real child list against the cached one by name. Reconciliation also parallelizes, but
+					only at the top two levels of the tree, mirroring the same restraint in the initial scan:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Business/ScanCore.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/ScanCore.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>// Only the top level fans out: nested Parallel.ForEach saturates the ThreadPool
+// faster than it grows (~1 thread/500ms), which presents as low CPU + UI stalls.
+// ~20-30 root subdirs of C:\ already give the top-level fan-out plenty to schedule.
+internal static void RecurseIntoChildren(DirOD dir, CancellationToken ct, ScanProgress? progress, int level)
+{
+    if (dir.Subdirectories.Length == 0) return;
+
+    if (level == 0 &amp;&amp; dir.Subdirectories.Length &gt; 1)
+    {
+        ParallelForEach(dir.Subdirectories, ct, sub =&gt;
+        {
+            DeepScan(sub, ct, progress, level + 1);
+        });
+    }
+    else
+    {
+        foreach (var sub in dir.Subdirectories)
+        {
+            if (ct.IsCancellationRequested) return;
+            DeepScan(sub, ct, progress, level + 1);
+        }
+    }
+}
+
+internal static void ParallelForEach&lt;T&gt;(IEnumerable&lt;T&gt; source, CancellationToken ct, Action&lt;T&gt; body)
+{
+    // Cap workers at ProcessorCount-1 so the UI dispatcher always has at
+    // least one core for the loading-bar Storyboard and binding updates.
+    var po = new ParallelOptions
+    {
+        CancellationToken = ct,
+        MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1),
+    };
+    Parallel.ForEach(source, po, body);
+}</code></pre>
+				</div>
+				<p>
 					The project also opts into server GC with concurrent collection in the csproj, specifically
 					to absorb the high allocation rate of that parallel scan without the long gen-2 pauses
 					workstation GC would cause.
@@ -161,39 +419,154 @@ return await req.DstProvider.ImportFromAsync(req.SrcProvider, req.SrcPath, req.D
 					approach fall over. Instead, the control lays every visible node out into a flat array of
 					rectangles once, then a binary search over that array finds the first and last node
 					intersecting the current viewport on every scroll or zoom:
-					<a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs#L353-L385" target="_blank" rel="noopener">Views/TreeGraphControl.xaml.cs#L353-L385</a>.
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Views/TreeGraphControl.xaml.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>// Binary search for the first index in _flatNodes whose node.Bottom &gt; y.
+private int LowerBound(double y)
+{
+    int lo = 0, hi = _flatNodes.Count;
+    while (lo &lt; hi)
+    {
+        int mid = (lo + hi) / 2;
+        if (_rects[_flatNodes[mid]].Bottom &lt;= y)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+
+// Binary search for the last index in _flatNodes whose node.Top &lt; y.
+private int UpperBound(double y)
+{
+    int lo = -1, hi = _flatNodes.Count - 1;
+    while (lo &lt; hi)
+    {
+        int mid = (lo + hi + 1) / 2;
+        if (_rects[_flatNodes[mid]].Top &gt;= y)
+            hi = mid - 1;
+        else
+            lo = mid;
+    }
+    return lo;
+}</code></pre>
+				</div>
 				<p>
-					Only that visible slice (plus a small buffer of
-					<a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs#L21" target="_blank" rel="noopener">5 rows</a>
-					above and below, to absorb scroll momentum) gets real WPF elements on the canvas; anything
-					that scrolls out is removed and its visual is reused if the same node scrolls back in
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs#L387-L438" target="_blank" rel="noopener">L387-L438</a>).
-					The connecting lines between nodes are drawn separately, once per frame, into a single
-					shared <code>DrawingVisual</code> instead of one shape per edge
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs#L452-L459" target="_blank" rel="noopener">L452-L459</a>),
-					which keeps the visual tree small regardless of how deep or wide the expanded tree gets.
-					Brushes and pens used for node chrome are all frozen at class-init time
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs#L46-L67" target="_blank" rel="noopener">L46-L67</a>),
-					which lets WPF share them across threads and skip change-notification overhead entirely.
+					Only that visible slice (plus a small buffer of rows above and below, to absorb scroll
+					momentum) gets real WPF elements on the canvas; anything that scrolls out is removed and
+					its visual is reused if the same node scrolls back in:
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Views/TreeGraphControl.xaml.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>private void UpdateView()
+{
+    if (_flatNodes.Count == 0) return;
+
+    var viewRect = GetViewportCanvasRect();
+    if (viewRect == Rect.Empty) return;
+
+    double buffer = (NodeH + RowGap) * ViewBufferRows; // 5 rows
+    int start = LowerBound(viewRect.Top - buffer);
+    int end = UpperBound(viewRect.Bottom + buffer);
+
+    // Build set of nodes that should be on canvas
+    var shouldBeVisible = new HashSet&lt;TreeItemViewModel&gt;(end - start + 2);
+    for (int i = start; i &lt;= end &amp;&amp; i &lt; _flatNodes.Count; i++)
+        shouldBeVisible.Add(_flatNodes[i]);
+
+    // Remove elements for nodes no longer in viewport, add/reposition the rest …
+}</code></pre>
+				</div>
+				<p>
+					The connecting lines between nodes are drawn separately, once per frame, into a single
+					shared <code>DrawingVisual</code> instead of one shape per edge, which keeps the visual
+					tree small regardless of how deep or wide the expanded tree gets. Brushes and pens used
+					for node chrome are all frozen at class-init time, which lets WPF share them across
+					threads and skip change-notification overhead entirely:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Views/TreeGraphControl.xaml.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>static TreeGraphControl()
+{
+    TextBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xE6, 0xED, 0xF3)));
+    // … a dozen more frozen brushes for node/folder/file chrome …
+    LinePen = new Pen(Freeze(new SolidColorBrush(Color.FromRgb(0x30, 0x36, 0x3D))), 1);
+    LinePen.Freeze();
+}
+
+private static T Freeze&lt;T&gt;(T freezable) where T : Freezable
+{
+    freezable.Freeze();
+    return freezable;
+}</code></pre>
+				</div>
 
 				<h2>The transfer queue: one Channel, N workers</h2>
 				<p>
 					Copies, moves, uploads, and downloads all funnel into <code>FileOperationQueue</code>,
 					which is a thin wrapper around an unbounded <code>System.Threading.Channels.Channel</code>
-					with a fixed pool of worker loops reading from it
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L19-L34" target="_blank" rel="noopener">Services/FileOperationQueue.cs#L19-L34</a>).
+					with a fixed pool of worker loops reading from it:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Services/FileOperationQueue.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>private readonly Channel&lt;QueueJobViewModel&gt; _channel =
+    Channel.CreateUnbounded&lt;QueueJobViewModel&gt;(new UnboundedChannelOptions
+    {
+        SingleReader = false,
+        SingleWriter = false,
+    });
+
+private bool _started;
+
+public void Start()
+{
+    if (_started) return;
+    _started = true;
+    for (int i = 0; i &lt; MaxConcurrent; i++)
+        _ = Task.Run(WorkerLoopAsync);
+}</code></pre>
+				</div>
+				<p>
 					Enqueuing a job immediately adds a view model to an <code>ObservableCollection</code> so
 					the queue panel updates the instant you drop a file, but that mutation is always dispatched
 					onto the UI thread first — mutating an <code>ObservableCollection</code> off-thread is a
-					reliable way to crash a bound <code>ItemsControl</code>
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L36-L43" target="_blank" rel="noopener">L36-L43</a>).
+					reliable way to crash a bound <code>ItemsControl</code>:
+				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Services/FileOperationQueue.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>public QueueJobViewModel Enqueue(FileOperationRequest request)
+{
+    var job = new QueueJobViewModel(request, RetryJob);
+    // Mutating Jobs off the UI thread crashes bound views.
+    DispatchInvoke(() =&gt; Jobs.Add(job));
+    _channel.Writer.TryWrite(job);
+    return job;
+}</code></pre>
+				</div>
+				<p>
 					Completed and cancelled jobs clear themselves from the panel after a short delay; failed
 					jobs stay until retried or dismissed, so a failure is never something you have to have
-					caught in the moment to notice
-					(<a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs#L129-L143" target="_blank" rel="noopener">L129-L143</a>).
+					caught in the moment to notice:
 				</p>
+				<div class="snippet">
+					<div class="snippet-file"><span>Services/FileOperationQueue.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs" target="_blank" rel="noopener">view file →</a></div>
+					<pre><code>// Failed jobs stay until retried or manually cleared so the failure
+// remains actionable.
+private void ScheduleClear(QueueJobViewModel job)
+{
+    if (job.Status == QueueJobStatus.Failed) return;
+
+    _ = Task.Delay(TerminalLifetime).ContinueWith(_ =&gt;
+    {
+        DispatchInvoke(() =&gt;
+        {
+            if (job.Status != QueueJobStatus.Failed &amp;&amp; !job.IsActive)
+                Jobs.Remove(job);
+        });
+    });
+}</code></pre>
+				</div>
 
 				<h2>The stack, in one place</h2>
 				<ul class="article-highlights">

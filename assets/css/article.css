@@ -59,6 +59,38 @@
 	line-height: 1.55;
 }
 
+.snippet {
+	margin: 0 0 20px;
+}
+
+.snippet-file {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.78rem;
+	color: var(--fg-dim);
+	background: var(--bg-alt);
+	border: 1px solid var(--border);
+	border-bottom: none;
+	border-radius: var(--radius) var(--radius) 0 0;
+	padding: 7px 14px;
+}
+
+.snippet-file a {
+	color: var(--fg-dim);
+}
+
+.snippet-file a:hover {
+	color: var(--accent);
+}
+
+.snippet pre {
+	margin: 0;
+	border-top: none;
+	border-radius: 0 0 var(--radius) var(--radius);
+}
+
 .article-highlights {
 	padding-left: 20px;
 	margin: 0 0 16px;
