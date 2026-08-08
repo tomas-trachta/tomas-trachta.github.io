@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Tomáš Trachta — Backend &amp; Fullstack Developer</title>
+	<meta name="description" content="Tomáš Trachta — backend/fullstack developer (C#/.NET, T-SQL, Vue, React) who also builds native Windows tools on the side.">
+	<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+	<header class="nav">
+		<div class="nav-inner">
+			<a class="brand" href="#top">Tomáš Trachta</a>
+			<nav class="nav-links">
+				<a href="#projects">Projects</a>
+				<a href="#about">About</a>
+				<a href="#cv">CV</a>
+				<a href="#contact">Contact</a>
+			</nav>
+		</div>
+	</header>
+
+	<main>
+		<section id="top" class="hero">
+			<div class="hero-inner">
+				<p class="eyebrow">Backend &amp; Fullstack Developer</p>
+				<h1>I build backend systems by day, and native Windows tools by night.</h1>
+				<p class="hero-sub">By day: C#/.NET and T-SQL/SQL Server backend work, with fullstack experience in Vue.js and React. On the side: C++ file managers, shells, and window switchers — tuned for instant startup, low memory footprint, and interactions that never make you wait.</p>
+
+				<ul class="quick-facts">
+					<li><span class="quick-facts-icon">📍</span> Prague, Czech Republic</li>
+					<li><span class="quick-facts-icon">🛠️</span> 3 years of industry, hands-on experience</li>
+					<li><span class="quick-facts-icon">🖥️</span> Backend .NET/SQL &amp; fullstack Vue/React</li>
+				</ul>
+
+				<div class="hero-actions">
+					<a class="btn btn-primary" href="#projects">See projects</a>
+					<a class="btn btn-secondary" href="assets/cv.pdf" target="_blank" rel="noopener">View CV</a>
+				</div>
+
+				<div class="skills-strip">
+					<span class="skill-pill">C# / .NET</span>
+					<span class="skill-pill">T-SQL / SQL Server</span>
+					<span class="skill-pill">Vue.js</span>
+					<span class="skill-pill">React</span>
+					<span class="skill-pill">C++17</span>
+					<span class="skill-pill">WPF</span>
+					<span class="skill-pill">Win32 API</span>
+					<span class="skill-pill">Direct2D / DirectComposition</span>
+					<span class="skill-pill">Multithreading</span>
+					<span class="skill-pill">Git</span>
+				</div>
+			</div>
+		</section>
+
+		<section id="projects" class="section">
+			<h2>Projects</h2>
+			<div class="projects-grid">
+
+				<article class="project-card">
+					<div class="project-media">
+						<img src="assets/img/josha.png" alt="Josha — dual-pane file manager screenshot" loading="lazy" class="lightbox-trigger">
+					</div>
+					<div class="project-body">
+						<h3>Josha</h3>
+						<p class="project-tag">.NET 9 · WPF · Windows</p>
+						<p>A dual-pane, keyboard-driven file manager for Windows. Total Commander muscle memory with a modern UI, integrated FTP/SFTP tabs, and a disk-usage tree view rendered on canvas.</p>
+						<ul class="project-highlights">
+							<li>Dual-pane, tabbed, local and remote sites side by side</li>
+							<li>FTP / FTPS / SFTP as first-class tabs with edit-on-server</li>
+							<li>Snapshot-backed disk usage view with live reconciliation</li>
+						</ul>
+						<div class="project-links">
+							<a href="https://github.com/tomas-trachta/Josha" target="_blank" rel="noopener">View on GitHub →</a>
+							<a href="https://github.com/tomas-trachta/Josha/releases/latest" target="_blank" rel="noopener">Download →</a>
+						</div>
+					</div>
+				</article>
+
+				<article class="project-card">
+					<div class="project-media">
+						<img src="assets/img/wbsh.png" alt="wbsh — shell running a test suite in Windows Terminal" loading="lazy" class="lightbox-trigger">
+					</div>
+					<div class="project-body">
+						<h3>wbsh</h3>
+						<p class="project-tag">C++17 · Native Windows</p>
+						<p>A Bash-compatible shell for Windows, built from scratch. A drop-in replacement for Git Bash with a real POSIX shell grammar, ANSI-aware line editing, and bundled coreutils.</p>
+						<ul class="project-highlights">
+							<li>Single self-contained ~1&nbsp;MB binary, no MSYS/Cygwin layer</li>
+							<li>Real lexer, parser, AST, and expander — not a regex hack</li>
+							<li>POSIX ↔ Windows path translation for native .exe interop</li>
+						</ul>
+						<div class="project-links">
+							<a href="https://github.com/tomas-trachta/wbsh" target="_blank" rel="noopener">View on GitHub →</a>
+							<a href="https://github.com/tomas-trachta/wbsh/releases/latest" target="_blank" rel="noopener">Download →</a>
+						</div>
+					</div>
+				</article>
+
+				<article class="project-card">
+					<div class="project-media">
+						<img src="assets/img/switchr.png" alt="Switchr — window switcher overlay with live thumbnails" loading="lazy" class="lightbox-trigger">
+					</div>
+					<div class="project-body">
+						<h3>Switchr</h3>
+						<p class="project-tag">C++17 · Direct2D · Windows</p>
+						<p>A fast, keyboard-driven window switcher with live thumbnails and workspaces. A single small tray app rendering a GPU-accelerated overlay on a hotkey.</p>
+						<ul class="project-highlights">
+							<li>Type-to-find across window titles and exe names</li>
+							<li>Named workspaces that isolate and relaunch whole app sets</li>
+							<li>DirectComposition + live DWM thumbnails, no installer needed</li>
+						</ul>
+						<div class="project-links">
+							<a href="https://github.com/tomas-trachta/Switchr" target="_blank" rel="noopener">View on GitHub →</a>
+							<a href="https://github.com/tomas-trachta/Switchr/releases/latest" target="_blank" rel="noopener">Download →</a>
+						</div>
+					</div>
+				</article>
+
+			</div>
+		</section>
+
+		<section id="about" class="section section-alt">
+			<h2>About</h2>
+			<div class="about-text">
+				<p>
+					Professionally, I'm a backend developer working in C#/.NET and T-SQL/SQL Server, with
+					fullstack experience building UIs in Vue.js and React.
+				</p>
+				<p>
+					I'm a genuine C#/.NET enthusiast — it's my language of choice even outside of work, and
+					it's what a good chunk of my personal projects are written in too.
+				</p>
+				<p>
+					Beyond that, I like building the kind of software I'd want to use myself: snappy,
+					lightweight, and pleasant to live in every day. Most of that personal work lives on
+					Windows — file management, shells, and window switching — with a constant eye on startup
+					time, memory footprint, and the small interaction details that make an app feel instant.
+				</p>
+				<p>
+					Even on a modern, up-to-date Windows install, a surprising amount of the day-to-day
+					experience still feels sluggish or half-finished, and I enjoy fixing that — quicker apps,
+					sharper UI, and workflows that respect your keyboard and your time.
+				</p>
+			</div>
+		</section>
+
+		<section id="cv" class="section">
+			<h2>CV</h2>
+			<div class="cv-block">
+				<div class="cv-preview">
+					<iframe src="assets/cv.pdf" title="CV preview"></iframe>
+				</div>
+				<div class="cv-actions">
+					<a class="btn btn-primary" href="assets/cv.pdf" download>Download CV (PDF)</a>
+					<a class="btn btn-secondary" href="assets/cv.pdf" target="_blank" rel="noopener">Open in new tab</a>
+				</div>
+			</div>
+		</section>
+
+		<section id="contact" class="section section-alt">
+			<h2>Contact</h2>
+			<p class="about-text">
+				Get in touch on <a href="https://github.com/tomas-trachta" target="_blank" rel="noopener">GitHub</a>,
+				<a href="https://www.linkedin.com/in/tom%C3%A1%C5%A1-trachta-4b7899264/" target="_blank" rel="noopener">LinkedIn</a>,
+				or by email at <a href="mailto:trachta.tomas@email.cz">trachta.tomas@email.cz</a>.
+			</p>
+		</section>
+	</main>
+
+	<footer class="footer">
+		<p>&copy; <span id="year"></span> Tomáš Trachta</p>
+	</footer>
+
+	<div class="lightbox" id="lightbox">
+		<button class="lightbox-close" id="lightbox-close" aria-label="Close">&times;</button>
+		<img src="" alt="" id="lightbox-img">
+	</div>
+
+	<script src="assets/js/main.js"></script>
+</body>
+</html>
