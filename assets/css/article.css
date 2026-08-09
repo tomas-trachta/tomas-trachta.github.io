@@ -112,3 +112,36 @@
 	color: var(--fg-dim);
 	font-size: 0.9rem;
 }
+
+.tok-comment {
+	color: var(--fg-dim);
+	font-style: italic;
+}
+
+.tok-string {
+	color: #98c379;
+}
+
+.tok-number {
+	color: #d19a66;
+}
+
+.tok-keyword {
+	color: #c678dd;
+}
+
+.tok-type {
+	color: #56b6c2;
+}
+
+.tok-func {
+	color: #61afef;
+}
+
+.tok-preproc {
+	color: #e5c07b;
+}
+
+.tok-variable {
+	color: #e5c07b;
+}

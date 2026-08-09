@@ -54,7 +54,7 @@
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Business/LocalFileSystemProvider.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/LocalFileSystemProvider.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>public Task&lt;FileOpsComponent.OpResult&gt; ImportFromAsync(
+					<pre><code class="lang-csharp">public Task&lt;FileOpsComponent.OpResult&gt; ImportFromAsync(
     IFileSystemProvider src, string srcPath, string dstPath,
     IProgress&lt;long&gt;? bytesCopied, bool overwrite, CancellationToken ct)
 {
@@ -97,7 +97,7 @@ private async Task&lt;FileOpsComponent.OpResult&gt; CrossProviderCopyAsync(
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Services/FileOperationQueue.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>if (req.SrcProvider.ProviderId == req.DstProvider.ProviderId)
+					<pre><code class="lang-csharp">if (req.SrcProvider.ProviderId == req.DstProvider.ProviderId)
     return await req.DstProvider.CopyAsync(req.SrcPath, req.DstPath, progress, req.Overwrite, ct).ConfigureAwait(false);
 return await req.DstProvider.ImportFromAsync(req.SrcProvider, req.SrcPath, req.DstPath, progress, req.Overwrite, ct).ConfigureAwait(false);</code></pre>
 				</div>
@@ -109,7 +109,7 @@ return await req.DstProvider.ImportFromAsync(req.SrcProvider, req.SrcPath, req.D
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Services/FileOperationQueue.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>if (req.SrcProvider.ProviderId == req.DstProvider.ProviderId)
+					<pre><code class="lang-csharp">if (req.SrcProvider.ProviderId == req.DstProvider.ProviderId)
     return await req.DstProvider.MoveAsync(req.SrcPath, req.DstPath, progress, req.Overwrite, ct).ConfigureAwait(false);
 
 // Cross-provider: copy first, delete source only on success.
@@ -133,7 +133,7 @@ return FileOpsComponent.OpResult.Ok();</code></pre>
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Business/Ftp/RemoteConnectionPool.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/Ftp/RemoteConnectionPool.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>public async Task&lt;Lease&gt; AcquireAsync(CancellationToken ct)
+					<pre><code class="lang-csharp">public async Task&lt;Lease&gt; AcquireAsync(CancellationToken ct)
 {
     await _gate.WaitAsync(ct).ConfigureAwait(false);
     try
@@ -162,7 +162,7 @@ return FileOpsComponent.OpResult.Ok();</code></pre>
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Business/Ftp/RemoteConnectionPool.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/Ftp/RemoteConnectionPool.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>if (faulted || !client.IsConnected)
+					<pre><code class="lang-csharp">if (faulted || !client.IsConnected)
 {
     await client.DisposeAsync().ConfigureAwait(false);
     return;
@@ -198,7 +198,7 @@ _ = Task.Delay(TimeSpan.FromSeconds(IdleSeconds), entry.Cts.Token)
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Services/EditOnServerWatcher.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/EditOnServerWatcher.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>_watcher = new FileSystemWatcher(tempDir)
+					<pre><code class="lang-csharp">_watcher = new FileSystemWatcher(tempDir)
 {
     NotifyFilter = NotifyFilters.LastWrite
                  | NotifyFilters.FileName
@@ -229,7 +229,7 @@ private void ScheduleUpload()
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Services/EditOnServerWatcher.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/EditOnServerWatcher.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>string newHash = HashFile(_tempFile);
+					<pre><code class="lang-csharp">string newHash = HashFile(_tempFile);
 if (newHash == _lastUploadedHash) return;
 
 await using var fs = new FileStream(_tempFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite,
@@ -255,7 +255,7 @@ _lastUploadedHash = newHash;</code></pre>
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Business/SnapshotComponent.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>private static string GetDataDir() =&gt;
+					<pre><code class="lang-csharp">private static string GetDataDir() =&gt;
     DirectoryAnalyserComponent.WinRoot + "josha_data";
 
 private static string GetSnapshotPath(string driveLetter)
@@ -271,7 +271,7 @@ private static string GetSnapshotPath(string driveLetter)
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Business/SnapshotComponent.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>var sb = new StringBuilder();
+					<pre><code class="lang-csharp">var sb = new StringBuilder();
 WriteNode(sb, root, 0);
 
 try
@@ -295,7 +295,7 @@ catch (Exception ex)
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Business/SnapshotComponent.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>string text;
+					<pre><code class="lang-csharp">string text;
 try
 {
     text = CryptoComponent.UnprotectString(ciphertext, DpapiEntropy);
@@ -313,7 +313,7 @@ catch (Exception ex)
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Business/SnapshotComponent.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>switch (unwrap.Status)
+					<pre><code class="lang-csharp">switch (unwrap.Status)
 {
     case PersistenceMigrator.UnwrapStatus.Ok:
         ciphertext = unwrap.Payload;
@@ -341,7 +341,7 @@ catch (Exception ex)
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Business/SnapshotComponent.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/SnapshotComponent.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>// Ultra-fast path: directory mtime unchanged → no add/remove/rename happened
+					<pre><code class="lang-csharp">// Ultra-fast path: directory mtime unchanged → no add/remove/rename happened
 // at this level. NTFS bumps the parent dir's LastWriteTime on those operations,
 // so an unchanged mtime is a strict superset of the old count+name heuristic.
 // Single GetFileAttributesEx syscall; skips both FindFirstFileEx enumerations.
@@ -369,7 +369,7 @@ if (dir.LastWriteTimeUtcTicks != 0)
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Business/ScanCore.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Business/ScanCore.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>// Only the top level fans out: nested Parallel.ForEach saturates the ThreadPool
+					<pre><code class="lang-csharp">// Only the top level fans out: nested Parallel.ForEach saturates the ThreadPool
 // faster than it grows (~1 thread/500ms), which presents as low CPU + UI stalls.
 // ~20-30 root subdirs of C:\ already give the top-level fan-out plenty to schedule.
 internal static void RecurseIntoChildren(DirOD dir, CancellationToken ct, ScanProgress? progress, int level)
@@ -422,7 +422,7 @@ internal static void ParallelForEach&lt;T&gt;(IEnumerable&lt;T&gt; source, Cance
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Views/TreeGraphControl.xaml.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>// Binary search for the first index in _flatNodes whose node.Bottom &gt; y.
+					<pre><code class="lang-csharp">// Binary search for the first index in _flatNodes whose node.Bottom &gt; y.
 private int LowerBound(double y)
 {
     int lo = 0, hi = _flatNodes.Count;
@@ -459,7 +459,7 @@ private int UpperBound(double y)
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Views/TreeGraphControl.xaml.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>private void UpdateView()
+					<pre><code class="lang-csharp">private void UpdateView()
 {
     if (_flatNodes.Count == 0) return;
 
@@ -487,7 +487,7 @@ private int UpperBound(double y)
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Views/TreeGraphControl.xaml.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Views/TreeGraphControl.xaml.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>static TreeGraphControl()
+					<pre><code class="lang-csharp">static TreeGraphControl()
 {
     TextBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xE6, 0xED, 0xF3)));
     // … a dozen more frozen brushes for node/folder/file chrome …
@@ -510,7 +510,7 @@ private static T Freeze&lt;T&gt;(T freezable) where T : Freezable
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Services/FileOperationQueue.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>private readonly Channel&lt;QueueJobViewModel&gt; _channel =
+					<pre><code class="lang-csharp">private readonly Channel&lt;QueueJobViewModel&gt; _channel =
     Channel.CreateUnbounded&lt;QueueJobViewModel&gt;(new UnboundedChannelOptions
     {
         SingleReader = false,
@@ -535,7 +535,7 @@ public void Start()
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Services/FileOperationQueue.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>public QueueJobViewModel Enqueue(FileOperationRequest request)
+					<pre><code class="lang-csharp">public QueueJobViewModel Enqueue(FileOperationRequest request)
 {
     var job = new QueueJobViewModel(request, RetryJob);
     // Mutating Jobs off the UI thread crashes bound views.
@@ -551,7 +551,7 @@ public void Start()
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Services/FileOperationQueue.cs</span><a href="https://github.com/tomas-trachta/Josha/blob/main/Services/FileOperationQueue.cs" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>// Failed jobs stay until retried or manually cleared so the failure
+					<pre><code class="lang-csharp">// Failed jobs stay until retried or manually cleared so the failure
 // remains actionable.
 private void ScheduleClear(QueueJobViewModel job)
 {
@@ -590,6 +590,7 @@ private void ScheduleClear(QueueJobViewModel job)
 		<p>&copy; <span id="year"></span> Tomáš Trachta</p>
 	</footer>
 
+	<script src="../assets/js/highlight.js"></script>
 	<script>document.getElementById("year").textContent = new Date().getFullYear();</script>
 </body>
 </html>

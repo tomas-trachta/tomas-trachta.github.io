@@ -43,7 +43,7 @@
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/lexer.h</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lexer.h" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>enum class TokKind {
+					<pre><code class="lang-cpp">enum class TokKind {
     Word,            // generic word; reserved words detected at parse time
     IoNumber,        // digits immediately followed by '&lt;' or '&gt;' (no space)
     Newline,
@@ -87,7 +87,7 @@
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/ast.h</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/ast.h" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>struct Node {
+					<pre><code class="lang-cpp">struct Node {
     enum class Kind {
         SimpleCommand,  ///&lt; `simple_command` — words + assignments + redirs.
         Pipeline,       ///&lt; `cmd | cmd | cmd` (with optional `!` and `time`).
@@ -140,7 +140,7 @@ struct SimpleCommand : Node {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/arena.h</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/arena.h" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>/**
+					<pre><code class="lang-cpp">/**
  * @file arena.h
  * @brief Bump-pointer memory arena for node-heavy structures (ASTs).
  *
@@ -188,7 +188,7 @@ T* make(Args&amp;&amp;... args) {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/builtins.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/builtins.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>static int builtin_break(Executor&amp; exec, const std::vector&lt;std::string&gt;&amp; args) {
+					<pre><code class="lang-cpp">static int builtin_break(Executor&amp; exec, const std::vector&lt;std::string&gt;&amp; args) {
     if (exec.loopDepth() == 0) {
         printerr("break: only meaningful in a `for', `while', or `until' loop");
         return 0;
@@ -214,7 +214,7 @@ static int builtin_continue(Executor&amp; exec, const std::vector&lt;std::string
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/executor.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/executor.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>LoopFlowAction Executor::dispatchLoopFlow() {
+					<pre><code class="lang-cpp">LoopFlowAction Executor::dispatchLoopFlow() {
     switch (flow_.kind) {
     case FlowSignal::Kind::Continue:
         if (--flow_.count &gt; 0) return LoopFlowAction::Propagate;
@@ -251,7 +251,7 @@ static int builtin_continue(Executor&amp; exec, const std::vector&lt;std::string
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/pathconv.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>PathConv::PathConv() {
+					<pre><code class="lang-cpp">PathConv::PathConv() {
     for (char c = 'a'; c &lt;= 'z'; ++c) {
         Mount m;
         m.posix = std::string("/") + c;
@@ -279,7 +279,7 @@ static int builtin_continue(Executor&amp; exec, const std::vector&lt;std::string
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/pathconv.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>bool PathConv::applyMount(const std::string&amp; p, std::string&amp; out) const {
+					<pre><code class="lang-cpp">bool PathConv::applyMount(const std::string&amp; p, std::string&amp; out) const {
     const Mount* best = nullptr;
     std::size_t best_len = 0;
     for (const auto&amp; m : mounts_) {
@@ -305,7 +305,7 @@ static int builtin_continue(Executor&amp; exec, const std::vector&lt;std::string
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/pathconv.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>bool PathConv::argLooksTranslatable(const std::string&amp; arg) const {
+					<pre><code class="lang-cpp">bool PathConv::argLooksTranslatable(const std::string&amp; arg) const {
     if (arg.empty()) return false;
     if (arg == "/") return false;
     if (arg.find("://") != std::string::npos) return false;
@@ -352,7 +352,7 @@ std::string PathConv::translateArg(const std::string&amp; arg) const {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/pathconv.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/pathconv.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>std::string PathConv::toWin32Short(const std::string&amp; p) const {
+					<pre><code class="lang-cpp">std::string PathConv::toWin32Short(const std::string&amp; p) const {
     std::string longw = toWin32(p);
 #ifdef _WIN32
     if (longw.empty()) return longw;
@@ -388,7 +388,7 @@ std::string PathConv::translateArg(const std::string&amp; arg) const {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/lineedit.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lineedit.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>std::string findInlinePrediction(const std::vector&lt;std::string&gt;&amp; history,
+					<pre><code class="lang-cpp">std::string findInlinePrediction(const std::vector&lt;std::string&gt;&amp; history,
                                  const std::vector&lt;int&gt;&amp; history_status,
                                  const std::string&amp; prefix) {
     if (prefix.empty()) return {};
@@ -412,7 +412,7 @@ std::string PathConv::translateArg(const std::string&amp; arg) const {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/lineedit.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/lineedit.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>std::size_t findReverseSearchMatch(const std::vector&lt;std::string&gt;&amp; history,
+					<pre><code class="lang-cpp">std::size_t findReverseSearchMatch(const std::vector&lt;std::string&gt;&amp; history,
                                    const std::string&amp; query,
                                    std::size_t start_index,
                                    bool forward) {
@@ -451,7 +451,7 @@ std::string PathConv::translateArg(const std::string&amp; arg) const {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/repl.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/repl.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>// The captured "good" modes are re-applied before every prompt:
+					<pre><code class="lang-cpp">// The captured "good" modes are re-applied before every prompt:
 // externals (pagers, vim) corrupt console state and don't restore it.
 s.h_out = GetStdHandle(STD_OUTPUT_HANDLE);
 s.h_in  = GetStdHandle(STD_INPUT_HANDLE);
@@ -470,7 +470,7 @@ if (s.h_out != INVALID_HANDLE_VALUE &amp;&amp; GetConsoleMode(s.h_out, &amp;s.go
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>src/repl.cpp</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/src/repl.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>static void setupConsoleWindow() {
+					<pre><code class="lang-cpp">static void setupConsoleWindow() {
     SetConsoleTitleW(L"wbsh");
     HWND hwnd = GetConsoleWindow();
     if (!hwnd) return;
@@ -517,7 +517,7 @@ if (s.h_out != INVALID_HANDLE_VALUE &amp;&amp; GetConsoleMode(s.h_out, &amp;s.go
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>tests/run-all.sh</span><a href="https://github.com/tomas-trachta/wbsh/blob/main/tests/run-all.sh" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>run_one() {
+					<pre><code class="lang-bash">run_one() {
     local script=$1
     local out=$TMP_DIR/${script}.out
 
@@ -572,6 +572,7 @@ if (s.h_out != INVALID_HANDLE_VALUE &amp;&amp; GetConsoleMode(s.h_out, &amp;s.go
 		<p>&copy; <span id="year"></span> Tomáš Trachta</p>
 	</footer>
 
+	<script src="../assets/js/highlight.js"></script>
 	<script>document.getElementById("year").textContent = new Date().getFullYear();</script>
 </body>
 </html>

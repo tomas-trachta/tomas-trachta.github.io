@@ -46,7 +46,7 @@
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Renderer.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>void Renderer::CreateDeviceResources() {
+					<pre><code class="lang-cpp">void Renderer::CreateDeviceResources() {
     CreateD3DDevice();
     CreateCompositionTarget();
     CreateD2D();
@@ -74,7 +74,7 @@ void Renderer::CreateCompositionTarget() {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Renderer.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>void Renderer::CreateD2D() {
+					<pre><code class="lang-cpp">void Renderer::CreateD2D() {
     ThrowIfFailed(D2D1CreateFactory(
         D2D1_FACTORY_TYPE_SINGLE_THREADED, IID_PPV_ARGS(&amp;d2dFactory_)),
         "D2D1CreateFactory");
@@ -92,7 +92,7 @@ void Renderer::CreateCompositionTarget() {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Renderer.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Renderer.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>void Renderer::AnimateOpacity(float from, float to, double seconds) {
+					<pre><code class="lang-cpp">void Renderer::AnimateOpacity(float from, float to, double seconds) {
     if (!opacityEffect_ || !dcomp_) return;
 
     ComPtr&lt;IDCompositionAnimation&gt; anim;
@@ -128,7 +128,7 @@ void Renderer::CreateCompositionTarget() {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Overlay.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>static void RegisterThumbnails(Overlay::State&amp; s, HWND overlayHwnd) {
+					<pre><code class="lang-cpp">static void RegisterThumbnails(Overlay::State&amp; s, HWND overlayHwnd) {
     UnregisterThumbnails(s);
     if (s.mode != Mode::Tiles) return;
 
@@ -170,7 +170,7 @@ static void UpdateThumbnailLayout(Overlay::State&amp; s) {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/MruTracker.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/MruTracker.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>HWINEVENTHOOK                       g_hook    = nullptr;
+					<pre><code class="lang-cpp">HWINEVENTHOOK                       g_hook    = nullptr;
 uint64_t                            g_counter = 0;
 std::unordered_map&lt;HWND, uint64_t&gt;  g_ranks;
 
@@ -190,7 +190,7 @@ void CALLBACK FgHookProc(HWINEVENTHOOK, DWORD, HWND hwnd,
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/MruTracker.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/MruTracker.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>// EnumWindows yields top-to-bottom z-order; the topmost window is the most
+					<pre><code class="lang-cpp">// EnumWindows yields top-to-bottom z-order; the topmost window is the most
 // recently active one, so it gets the largest rank.
 void SeedRanksFromZOrder() {
     std::vector&lt;HWND&gt; hwnds;
@@ -220,7 +220,7 @@ void SeedRanksFromZOrder() {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/WindowList.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/WindowList.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>// The classic alt-tab ownership rule: a window qualifies only if it is the
+					<pre><code class="lang-cpp">// The classic alt-tab ownership rule: a window qualifies only if it is the
 // last active visible popup of its own owner chain.
 bool IsLastActivePopupOfOwnerChain(HWND hwnd) {
     HWND walk = nullptr;
@@ -257,7 +257,7 @@ bool IsAltTabWindow(HWND hwnd) {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/WindowList.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/WindowList.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>void ForceForeground(HWND target) {
+					<pre><code class="lang-cpp">void ForceForeground(HWND target) {
     if (IsHungAppWindow(target)) {
         if (IsIconic(target)) ShowWindowAsync(target, SW_RESTORE);
         return;
@@ -297,7 +297,7 @@ bool IsAltTabWindow(HWND hwnd) {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Overlay.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>// -1 = no match.
+					<pre><code class="lang-cpp">// -1 = no match.
 int ScoreEntry(const WindowEntry&amp; w, const std::vector&lt;std::wstring&gt;&amp; terms) {
     if (terms.empty()) return 0;
 
@@ -328,7 +328,7 @@ int ScoreEntry(const WindowEntry&amp; w, const std::vector&lt;std::wstring&gt;&a
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Overlay.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>struct Scored { int idx; int score; uint64_t mru; };
+					<pre><code class="lang-cpp">struct Scored { int idx; int score; uint64_t mru; };
 std::vector&lt;Scored&gt; hits;
 for (int i = 0; i &lt; (int)s.all.size(); ++i) {
     int sc = ScoreEntry(s.all[i], terms);
@@ -355,7 +355,7 @@ std::sort(hits.begin(), hits.end(),
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Namespaces.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>void SuppressTransitions(HWND h) {
+					<pre><code class="lang-cpp">void SuppressTransitions(HWND h) {
     if (!g_noTrans.insert(h).second) return;
     BOOL on = TRUE;
     DwmSetWindowAttribute(h, DWMWA_TRANSITIONS_FORCEDISABLED, &amp;on, sizeof(on));
@@ -394,7 +394,7 @@ void ApplyVisibility(const std::vector&lt;HWND&gt;&amp; show, const std::vector&
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Namespaces.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>g_owner = hotkeyOwner;
+					<pre><code class="lang-cpp">g_owner = hotkeyOwner;
 g_showHook = SetWinEventHook(
     EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW,
     nullptr, ShowHookProc, 0, 0,
@@ -414,7 +414,7 @@ g_destroyHook = SetWinEventHook(
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Namespaces.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>// Apps launched by LoadApps join their saved namespace (not the active one)
+					<pre><code class="lang-cpp">// Apps launched by LoadApps join their saved namespace (not the active one)
 // when their window finally appears; entries expire in case a launch dies.
 struct PendingAssign {
     std::wstring exeLower;
@@ -438,7 +438,7 @@ void PrunePending() {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Namespaces.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Namespaces.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>bool Ns::SaveToFile() {
+					<pre><code class="lang-cpp">bool Ns::SaveToFile() {
     if (g_names.empty()) return false;
 
     std::vector&lt;std::vector&lt;std::wstring&gt;&gt; apps(g_names.size());
@@ -478,7 +478,7 @@ void PrunePending() {
 				</p>
 				<div class="snippet">
 					<div class="snippet-file"><span>Switchr/src/Overlay.cpp</span><a href="https://github.com/tomas-trachta/Switchr/blob/main/Switchr/src/Overlay.cpp" target="_blank" rel="noopener">view file →</a></div>
-					<pre><code>static RECT MonitorRectForForeground() {
+					<pre><code class="lang-cpp">static RECT MonitorRectForForeground() {
     HWND fg = GetForegroundWindow();
     HMONITOR mon = fg ? MonitorFromWindow(fg, MONITOR_DEFAULTTOPRIMARY)
                       : MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
@@ -522,6 +522,7 @@ void PrunePending() {
 		<p>&copy; <span id="year"></span> Tomáš Trachta</p>
 	</footer>
 
+	<script src="../assets/js/highlight.js"></script>
 	<script>document.getElementById("year").textContent = new Date().getFullYear();</script>
 </body>
 </html>
